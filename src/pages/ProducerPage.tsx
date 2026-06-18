@@ -18,7 +18,6 @@ import {
   BarChart3,
   ShieldAlert,
   Layers,
-  Activity,
   Target,
   AlertOctagon,
 } from 'lucide-react';
@@ -28,13 +27,14 @@ import { difficultyLabels, saveStateLabels } from '../data/chapters';
 import { useApp } from '../store/AppContext';
 import type { ReviewFilterState } from '../store/AppContext';
 import { jumpScares } from '../data/jumpScares';
-import { SeverityBadge } from '../components/Badges';
+import { SeverityBadge, IssueTypeBadge } from '../components/Badges';
 import type { Severity, IssueType } from '../types';
 
 const ProducerPage: React.FC = () => {
   const { testResults, batches, navigateToReview } = useApp();
   const [expandedInsight, setExpandedInsight] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
+  const [riskTab, setRiskTab] = useState<'highRisk' | 'unresolved' | 'resolved'>('highRisk');
 
   const overallStats = useMemo(() => {
     const total = testResults.length;
@@ -122,6 +122,139 @@ const ProducerPage: React.FC = () => {
     return priorities;
   }, [testResults, failureRateByJumpScare]);
 
+  const riskGroups = useMemo(() => {
+    const highRiskBatches: Array<{
+      id: string;
+      name: string;
+      severeCount: number;
+      needsReview: number;
+      pending: number;
+      completionRate: number;
+      unresolvedRegressions: number;
+    }> = [];
+    batches.forEach(batch => {
+      if (batch.parentBatchId) return;
+      const batchResults = testResults.filter(r => r.batchId === batch.id);
+      const severeCount = batchResults.filter(r => r.checks.severity === 'critical' || r.checks.severity === 'high').length;
+      const needsReview = batch.jumpScareIds.filter(id => batch.statuses[id] === 'needs_review').length;
+      const pending = batch.jumpScareIds.filter(id => batch.statuses[id] === 'pending').length;
+      const total = batch.jumpScareIds.length;
+      const completionRate = total > 0 ? Math.round(((total - pending) / total) * 100) : 0;
+      const childRegressions = batches.filter(b => b.parentBatchId === batch.id);
+      const unresolvedRegressions = childRegressions.reduce((acc, cb) => {
+        const childResults = testResults.filter(r => r.batchId === cb.id);
+        const unresolved = childResults.filter(r => !r.passed).length;
+        return acc + unresolved;
+      }, 0);
+      if (severeCount > 0 || needsReview > 2 || completionRate < 60) {
+        highRiskBatches.push({
+          id: batch.id,
+          name: batch.name,
+          severeCount,
+          needsReview,
+          pending,
+          completionRate,
+          unresolvedRegressions,
+        });
+      }
+    });
+    highRiskBatches.sort((a, b) => (b.severeCount + b.needsReview * 2) - (a.severeCount + a.needsReview * 2));
+
+    const allFailedResults = testResults.filter(r => !r.passed);
+    const closedByRegression = new Set<string>();
+    testResults.forEach(r => {
+      if (r.isRegression && r.passed && r.parentBatchId) {
+        const originalResults = testResults.filter(or => or.jumpScareId === r.jumpScareId && or.batchId === r.parentBatchId);
+        originalResults.forEach(or => closedByRegression.add(or.id));
+      }
+    });
+    const unresolvedIssues: Array<{
+      resultId: string;
+      jumpScareId: string;
+      jumpScareName: string;
+      severity: Severity;
+      issueType: IssueType | null;
+      routeName: string;
+      batchId?: string;
+      batchName?: string;
+      tester: string;
+      timestamp: Date;
+      notes?: string;
+    }> = [];
+    allFailedResults.forEach(r => {
+      if (closedByRegression.has(r.id)) return;
+      if (r.batchId) {
+        const parentBatch = batches.find(b => b.id === r.batchId);
+        if (parentBatch) {
+          const regressed = testResults.some(
+            rr => rr.jumpScareId === r.jumpScareId && rr.isRegression && rr.passed && rr.parentBatchId === r.batchId
+          );
+          if (regressed) return;
+        }
+      }
+      const js = jumpScares.find(j => j.id === r.jumpScareId);
+      const char = characters.find(c => c.id === r.route);
+      const batch = r.batchId ? batches.find(b => b.id === r.batchId) : undefined;
+      unresolvedIssues.push({
+        resultId: r.id,
+        jumpScareId: r.jumpScareId,
+        jumpScareName: js?.name || r.jumpScareId,
+        severity: r.checks.severity || 'medium',
+        issueType: r.checks.issueType || null,
+        routeName: char?.name || r.route,
+        batchId: r.batchId,
+        batchName: batch?.name,
+        tester: r.tester,
+        timestamp: r.timestamp,
+        notes: r.checks.notes,
+      });
+    });
+    unresolvedIssues.sort((a, b) => {
+      const sevOrder: Record<Severity, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+      return sevOrder[a.severity] - sevOrder[b.severity];
+    });
+
+    const regressionPassed: Array<{
+      resultId: string;
+      jumpScareId: string;
+      jumpScareName: string;
+      regressionBatchName: string;
+      originalBatchName?: string;
+      routeName: string;
+      tester: string;
+      timestamp: Date;
+    }> = [];
+    testResults.forEach(r => {
+      if (!r.isRegression || !r.passed) return;
+      const js = jumpScares.find(j => j.id === r.jumpScareId);
+      const char = characters.find(c => c.id === r.route);
+      const regBatch = r.batchId ? batches.find(b => b.id === r.batchId) : undefined;
+      const origBatch = r.parentBatchId ? batches.find(b => b.id === r.parentBatchId) : undefined;
+      regressionPassed.push({
+        resultId: r.id,
+        jumpScareId: r.jumpScareId,
+        jumpScareName: js?.name || r.jumpScareId,
+        regressionBatchName: regBatch?.name || (r.batchId || ''),
+        originalBatchName: origBatch?.name,
+        routeName: char?.name || r.route,
+        tester: r.tester,
+        timestamp: r.timestamp,
+      });
+    });
+    regressionPassed.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+    return {
+      highRiskBatches: highRiskBatches.slice(0, 8),
+      unresolvedIssues: unresolvedIssues.slice(0, 10),
+      regressionPassed: regressionPassed.slice(0, 8),
+      summary: {
+        highRiskCount: highRiskBatches.length,
+        unresolvedCount: unresolvedIssues.length,
+        regressionPassedCount: regressionPassed.length,
+      },
+    };
+  }, [batches, testResults, jumpScares, characters]);
+
   const batchCompletionCards = useMemo(() => {
     return batches.map(batch => {
       const total = batch.jumpScareIds.length;
@@ -152,41 +285,6 @@ const ProducerPage: React.FC = () => {
         severeIssueCount: criticalCount + highCount,
       };
     });
-  }, [batches, testResults]);
-
-  const severityTrend = useMemo(() => {
-    const sortedBatches = [...batches].sort((a, b) =>
-      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
-    );
-    if (sortedBatches.length === 0 && testResults.length === 0) return [];
-    const trend: { label: string; critical: number; high: number; medium: number; low: number; total: number; batchId: string | 'none' }[] = [];
-    if (sortedBatches.length > 0) {
-      sortedBatches.forEach(batch => {
-        const batchResults = testResults.filter(r => r.batchId === batch.id);
-        trend.push({
-          label: batch.name,
-          critical: batchResults.filter(r => r.checks.severity === 'critical').length,
-          high: batchResults.filter(r => r.checks.severity === 'high').length,
-          medium: batchResults.filter(r => r.checks.severity === 'medium').length,
-          low: batchResults.filter(r => r.checks.severity === 'low').length,
-          total: batchResults.length,
-          batchId: batch.id,
-        });
-      });
-    }
-    const noBatchResults = testResults.filter(r => !r.batchId);
-    if (noBatchResults.length > 0) {
-      trend.push({
-        label: '无批次记录',
-        critical: noBatchResults.filter(r => r.checks.severity === 'critical').length,
-        high: noBatchResults.filter(r => r.checks.severity === 'high').length,
-        medium: noBatchResults.filter(r => r.checks.severity === 'medium').length,
-        low: noBatchResults.filter(r => r.checks.severity === 'low').length,
-        total: noBatchResults.length,
-        batchId: 'none',
-      });
-    }
-    return trend;
   }, [batches, testResults]);
 
   const consecutiveFailureCards = useMemo(() => {
@@ -386,52 +484,137 @@ const ProducerPage: React.FC = () => {
             </div>
 
             <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
-              <div className="flex items-center gap-2 mb-4">
-                <Activity className="w-5 h-5 text-orange-400" />
-                <h4 className="text-sm font-semibold text-horror-heading">严重问题趋势</h4>
+              <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center gap-2">
+                  <AlertOctagon className="w-5 h-5 text-red-500" />
+                  <h4 className="text-sm font-semibold text-horror-heading">风险分组追踪</h4>
+                </div>
               </div>
-              {severityTrend.length === 0 ? (
-                <p className="text-sm text-horror-text/50 text-center py-6">暂无趋势数据</p>
-              ) : (
-                <div className="space-y-3">
-                  {severityTrend.map((item, idx) => {
-                    const maxTotal = Math.max(...severityTrend.map(t => t.total), 1);
-                    return (
+              <div className="flex items-center gap-1 mb-4 bg-horror-bg/50 rounded-lg p-1">
+                <button
+                  onClick={() => setRiskTab('highRisk')}
+                  className={`flex-1 px-2 py-1.5 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1 ${
+                    riskTab === 'highRisk'
+                      ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+                      : 'text-horror-text/60 hover:text-horror-heading'
+                  }`}
+                >
+                  <AlertTriangle className="w-3 h-3" />
+                  高风险 {riskGroups.summary.highRiskCount > 0 && <span>({riskGroups.summary.highRiskCount})</span>}
+                </button>
+                <button
+                  onClick={() => setRiskTab('unresolved')}
+                  className={`flex-1 px-2 py-1.5 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1 ${
+                    riskTab === 'unresolved'
+                      ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                      : 'text-horror-text/60 hover:text-horror-heading'
+                  }`}
+                >
+                  <XCircle className="w-3 h-3" />
+                  未闭环 {riskGroups.summary.unresolvedCount > 0 && <span>({riskGroups.summary.unresolvedCount})</span>}
+                </button>
+                <button
+                  onClick={() => setRiskTab('resolved')}
+                  className={`flex-1 px-2 py-1.5 rounded text-xs font-medium transition-colors flex items-center justify-center gap-1 ${
+                    riskTab === 'resolved'
+                      ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+                      : 'text-horror-text/60 hover:text-horror-heading'
+                  }`}
+                >
+                  <CheckCircle2 className="w-3 h-3" />
+                  已回归 {riskGroups.summary.regressionPassedCount > 0 && <span>({riskGroups.summary.regressionPassedCount})</span>}
+                </button>
+              </div>
+              {riskTab === 'highRisk' && (
+                riskGroups.highRiskBatches.length === 0 ? (
+                  <p className="text-sm text-horror-text/50 text-center py-6">暂无高风险批次 🎉</p>
+                ) : (
+                  <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+                    {riskGroups.highRiskBatches.map(batch => (
                       <button
-                        key={idx}
-                        onClick={() => handleNavigateToReview({
-                          batchId: item.batchId,
-                          severity: item.critical > 0 ? 'critical' : item.high > 0 ? 'high' : undefined,
-                          trendLabel: item.label,
-                        })}
-                        className="w-full text-left p-3 bg-horror-bg/50 rounded-lg border border-horror-border/50 hover:border-horror-accent/50 hover:bg-horror-accent/5 transition-all"
+                        key={batch.id}
+                        onClick={() => handleNavigateToReview({ batchId: batch.id })}
+                        className="w-full text-left p-3 bg-red-500/5 rounded-lg border border-red-500/20 hover:border-red-500/40 hover:bg-red-500/10 transition-all"
                       >
                         <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm font-medium text-horror-heading truncate mr-2">{item.label}</span>
-                          <span className="text-xs text-horror-text/50">{item.total} 条</span>
+                          <span className="text-sm font-medium text-horror-heading truncate mr-2">{batch.name}</span>
+                          <span className="text-xs text-horror-text/50">{batch.completionRate}%</span>
                         </div>
-                        <div className="h-3 bg-horror-border/30 rounded-full overflow-hidden flex">
-                          <div className="bg-red-500 h-full" style={{ width: `${(item.critical / maxTotal) * 100}%` }} title={`严重: ${item.critical}`} />
-                          <div className="bg-orange-500 h-full" style={{ width: `${(item.high / maxTotal) * 100}%` }} title={`高: ${item.high}`} />
-                          <div className="bg-yellow-500 h-full" style={{ width: `${(item.medium / maxTotal) * 100}%` }} title={`中: ${item.medium}`} />
-                          <div className="bg-blue-500 h-full" style={{ width: `${(item.low / maxTotal) * 100}%` }} title={`低: ${item.low}`} />
-                        </div>
-                        <div className="flex items-center gap-3 mt-2 text-xs">
-                          {item.critical > 0 && <span className="text-red-400">严重 {item.critical}</span>}
-                          {item.high > 0 && <span className="text-orange-400">高 {item.high}</span>}
-                          {item.medium > 0 && <span className="text-yellow-400">中 {item.medium}</span>}
-                          {item.low > 0 && <span className="text-blue-400">低 {item.low}</span>}
+                        <div className="flex items-center gap-3 text-xs flex-wrap">
+                          {batch.severeCount > 0 && <span className="text-red-400">严重+高 {batch.severeCount}</span>}
+                          {batch.needsReview > 0 && <span className="text-yellow-400">复查 {batch.needsReview}</span>}
+                          {batch.pending > 0 && <span className="text-horror-text/50">待测 {batch.pending}</span>}
+                          {batch.unresolvedRegressions > 0 && <span className="text-orange-400">回归未过 {batch.unresolvedRegressions}</span>}
                         </div>
                       </button>
-                    );
-                  })}
-                  <div className="flex items-center gap-3 pt-2 text-xs text-horror-text/40 border-t border-horror-border/50">
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500" />严重</span>
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500" />高</span>
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500" />中</span>
-                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500" />低</span>
+                    ))}
                   </div>
-                </div>
+                )
+              )}
+              {riskTab === 'unresolved' && (
+                riskGroups.unresolvedIssues.length === 0 ? (
+                  <p className="text-sm text-horror-text/50 text-center py-6">所有问题都已闭环 🎉</p>
+                ) : (
+                  <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+                    {riskGroups.unresolvedIssues.map(issue => (
+                      <button
+                        key={issue.resultId}
+                        onClick={() => handleNavigateToReview({
+                          jumpScareId: issue.jumpScareId,
+                          batchId: issue.batchId || 'none',
+                          severity: issue.severity === 'critical' || issue.severity === 'high' ? issue.severity : undefined,
+                          compareMode: true,
+                        })}
+                        className="w-full text-left p-2.5 bg-yellow-500/5 rounded-lg border border-yellow-500/20 hover:border-yellow-500/40 hover:bg-yellow-500/10 transition-all"
+                      >
+                        <div className="flex items-start justify-between gap-2 mb-1">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <SeverityBadge severity={issue.severity} size="sm" />
+                            <span className="text-sm font-medium text-horror-heading truncate">{issue.jumpScareName}</span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] text-horror-text/60 flex-wrap">
+                          <span>{issue.routeName}</span>
+                          <span>·</span>
+                          <span>{issue.tester}</span>
+                          {issue.batchName && <><span>·</span><span className="truncate max-w-[80px]">{issue.batchName}</span></>}
+                          {issue.issueType && (
+                            <><span>·</span><IssueTypeBadge type={issue.issueType} /></>
+                          )}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )
+              )}
+              {riskTab === 'resolved' && (
+                riskGroups.regressionPassed.length === 0 ? (
+                  <p className="text-sm text-horror-text/50 text-center py-6">暂无回归通过记录</p>
+                ) : (
+                  <div className="space-y-2 max-h-[320px] overflow-y-auto pr-1">
+                    {riskGroups.regressionPassed.map(item => (
+                      <button
+                        key={item.resultId}
+                        onClick={() => handleNavigateToReview({ jumpScareId: item.jumpScareId, compareMode: true })}
+                        className="w-full text-left p-2.5 bg-green-500/5 rounded-lg border border-green-500/20 hover:border-green-500/40 hover:bg-green-500/10 transition-all"
+                      >
+                        <div className="flex items-center gap-1.5 mb-1">
+                          <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                          <span className="text-sm font-medium text-horror-heading truncate">{item.jumpScareName}</span>
+                        </div>
+                        <div className="flex items-center gap-2 text-[11px] text-horror-text/60 flex-wrap">
+                          <span className="text-green-400">{item.regressionBatchName}</span>
+                          {item.originalBatchName && <><span>·</span><span className="truncate max-w-[80px]">源: {item.originalBatchName}</span></>}
+                          <span>·</span>
+                          <span>{item.tester}</span>
+                        </div>
+                        <div className="text-[10px] text-horror-text/40 mt-0.5">
+                          {new Date(item.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )
               )}
             </div>
 

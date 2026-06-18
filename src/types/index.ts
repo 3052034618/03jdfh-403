@@ -108,3 +108,21 @@ export interface ProducerInsight {
   evidence: string[];
   recommendation: string;
 }
+
+export interface ReviewSnapshot {
+  id: string;
+  name: string;
+  createdAt: Date;
+  createdBy: string;
+  filters: {
+    severity?: string;
+    route?: string;
+    batchId?: string;
+    tester?: string;
+    groupBy?: string;
+  };
+  failedJumpScareIds: string[];
+  keyNotes: string;
+  totalFilteredResults: number;
+  failedCount: number;
+}

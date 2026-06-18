@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
   User, Gamepad2, Save, ChevronRight, AlertTriangle, Plus, Layers, Clock, X,
   RotateCcw, CheckCircle2, XCircle, HelpCircle, FileText, ArrowRight, Lock,
-  Unlock, GitBranch, CheckSquare, Square, RefreshCw,
+  Unlock, GitBranch, CheckSquare, Square, RefreshCw, ShieldCheck, AlertCircle, History,
 } from 'lucide-react';
 import { useApp } from '../store/AppContext';
 import { characters } from '../data/characters';
@@ -30,6 +30,7 @@ const TasksPage: React.FC = () => {
     testResults,
     resetBatchItemsToPending,
     batchLocked,
+    navigateToReview,
   } = useApp();
 
   const [batchName, setBatchName] = useState('');
@@ -124,6 +125,51 @@ const TasksPage: React.FC = () => {
   const drawerParentBatch = drawerBatch?.parentBatchId
     ? batches.find(b => b.id === drawerBatch.parentBatchId)
     : null;
+
+  const regressionAcceptanceData = useMemo(() => {
+    if (!drawerBatch || drawerBatch.parentBatchId) return null;
+    const childBatches = batches.filter(b => b.parentBatchId === drawerBatch.id);
+    const itemMap: Record<string, {
+      jumpScareId: string;
+      name: string;
+      regressionBatches: Array<{ batchId: string; batchName: string; passed: boolean; timestamp: Date; isRegression: boolean }>;
+      lastPassed: boolean;
+      totalRegressions: number;
+      hasAnyRegression: boolean;
+    }> = {};
+    drawerBatch.jumpScareIds.forEach(jsId => {
+      const js = jumpScares.find(j => j.id === jsId);
+      if (!js) return;
+      if (drawerBatch.statuses[jsId] !== 'needs_review' && !drawerBatch.regressionResultIds?.[jsId]) return;
+      const relatedBatches = childBatches.filter(b => b.jumpScareIds.includes(jsId));
+      const allResults: Array<{ batchId: string; batchName: string; passed: boolean; timestamp: Date; isRegression: boolean }> = [];
+      relatedBatches.forEach(batch => {
+        const results = testResults.filter(r => r.jumpScareId === jsId && r.batchId === batch.id);
+        results.forEach(r => {
+          allResults.push({ batchId: batch.id, batchName: batch.name, passed: r.passed, timestamp: r.timestamp, isRegression: !!r.isRegression });
+        });
+      });
+      allResults.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      const lastPassed = allResults.some(r => r.passed && r.isRegression);
+      itemMap[jsId] = {
+        jumpScareId: jsId,
+        name: js.name,
+        regressionBatches: allResults,
+        lastPassed,
+        totalRegressions: allResults.length,
+        hasAnyRegression: allResults.length > 0,
+      };
+    });
+    const items = Object.values(itemMap);
+    return {
+      items,
+      childBatchCount: childBatches.length,
+      totalNeedsReview: items.length,
+      passedCount: items.filter(i => i.lastPassed).length,
+      inProgressCount: items.filter(i => !i.lastPassed && i.hasAnyRegression).length,
+      noRegressionCount: items.filter(i => !i.hasAnyRegression).length,
+    };
+  }, [drawerBatch, batches, testResults, jumpScares]);
 
   const formatTimeAgo = (date: Date) => {
     const diff = Date.now() - new Date(date).getTime();
@@ -791,6 +837,82 @@ const TasksPage: React.FC = () => {
                   <RotateCcw className="w-4 h-4" />
                   重排 {drawerNeedsReviewItems.length} 项需复查回待测
                 </button>
+              )}
+
+              {regressionAcceptanceData && regressionAcceptanceData.totalNeedsReview > 0 && (
+                <div className="p-4 bg-horror-accent2/5 border border-horror-accent2/20 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold text-horror-heading flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-horror-accent2" />
+                      回归验收看板
+                    </h4>
+                    <span className="text-xs text-horror-text/50">
+                      {regressionAcceptanceData.childBatchCount} 个子批次
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-3 gap-2 text-center">
+                    <div className="p-2 bg-green-500/5 rounded-lg border border-green-500/20">
+                      <div className="text-green-400 text-lg font-bold">{regressionAcceptanceData.passedCount}</div>
+                      <div className="text-xs text-green-400/70">已回归通过</div>
+                    </div>
+                    <div className="p-2 bg-yellow-500/5 rounded-lg border border-yellow-500/20">
+                      <div className="text-yellow-400 text-lg font-bold">{regressionAcceptanceData.inProgressCount}</div>
+                      <div className="text-xs text-yellow-400/70">回归中</div>
+                    </div>
+                    <div className="p-2 bg-horror-border/30 rounded-lg border border-horror-border">
+                      <div className="text-horror-text text-lg font-bold">{regressionAcceptanceData.noRegressionCount}</div>
+                      <div className="text-xs text-horror-text/60">未创建回归</div>
+                    </div>
+                  </div>
+                  <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
+                    {regressionAcceptanceData.items.map(item => {
+                      const statusColor = item.lastPassed
+                        ? 'border-green-500/30 bg-green-500/5'
+                        : item.hasAnyRegression
+                        ? 'border-yellow-500/30 bg-yellow-500/5'
+                        : 'border-horror-border bg-horror-bg/30';
+                      return (
+                        <div key={item.jumpScareId} className={`p-2.5 rounded-lg border ${statusColor}`}>
+                          <div className="flex items-center justify-between mb-1.5">
+                            <div className="flex items-center gap-1.5 min-w-0">
+                              {item.lastPassed ? (
+                                <CheckCircle2 className="w-3.5 h-3.5 text-green-500 flex-shrink-0" />
+                              ) : item.hasAnyRegression ? (
+                                <AlertCircle className="w-3.5 h-3.5 text-yellow-500 flex-shrink-0" />
+                              ) : (
+                                <Clock className="w-3.5 h-3.5 text-horror-text/50 flex-shrink-0" />
+                              )}
+                              <span className="text-sm font-medium text-horror-heading truncate">{item.name}</span>
+                            </div>
+                            <button
+                              onClick={() => navigateToReview({ jumpScareId: item.jumpScareId, compareMode: true, batchId: drawerBatch.id })}
+                              className="flex-shrink-0 px-2 py-0.5 text-[11px] bg-horror-accent/10 text-horror-accent rounded hover:bg-horror-accent/20 transition-colors flex items-center gap-1"
+                            >
+                              <History className="w-3 h-3" />时间线
+                            </button>
+                          </div>
+                          <div className="flex items-center gap-2 text-[11px] text-horror-text/60 flex-wrap">
+                            {item.hasAnyRegression ? (
+                              <>
+                                <span>回归 <span className="text-horror-text font-medium">{item.totalRegressions}</span> 次</span>
+                                <span>·</span>
+                                <span>最后: <span className={item.lastPassed ? 'text-green-400' : 'text-red-400'}>{item.lastPassed ? '通过' : '未通过'}</span></span>
+                                {item.regressionBatches[0] && (
+                                  <>
+                                    <span>·</span>
+                                    <span className="truncate max-w-[120px]">{item.regressionBatches[0].batchName}</span>
+                                  </>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-horror-text/40">尚未创建回归批次</span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
 
               <div className="space-y-2">

@@ -8,6 +8,7 @@ import type {
   TestCheckItem,
   TestBatch,
   TestItemStatus,
+  ReviewSnapshot,
 } from '../types';
 import { testResults as initialTestResults } from '../data/testResults';
 import { jumpScares } from '../data/jumpScares';
@@ -35,6 +36,7 @@ interface AppState {
   testerId: string;
   reviewFilters: ReviewFilterState | null;
   batchLocked: boolean;
+  reviewSnapshots: ReviewSnapshot[];
 }
 
 interface AppContextType extends AppState {
@@ -55,6 +57,8 @@ interface AppContextType extends AppState {
   resetBatchItemsToPending: (batchId: string) => void;
   navigateToReview: (filters: ReviewFilterState) => void;
   clearReviewFilters: () => void;
+  saveReviewSnapshot: (snapshot: Omit<ReviewSnapshot, 'id' | 'createdAt' | 'createdBy'>) => void;
+  deleteReviewSnapshot: (id: string) => void;
 }
 
 const defaultChecks: TestCheckItem = {
@@ -81,6 +85,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     testerId: 'QA-001',
     reviewFilters: null,
     batchLocked: false,
+    reviewSnapshots: [],
   });
 
   const setSelectedRoute = (route: CharacterRoute | null) => {
@@ -311,6 +316,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setState(prev => ({ ...prev, reviewFilters: null }));
   };
 
+  const saveReviewSnapshot = useCallback((data: Omit<ReviewSnapshot, 'id' | 'createdAt' | 'createdBy'>) => {
+    setState(prev => {
+      const snapshot: ReviewSnapshot = {
+        ...data,
+        id: `snapshot-${Date.now()}`,
+        createdAt: new Date(),
+        createdBy: prev.testerId,
+      };
+      return {
+        ...prev,
+        reviewSnapshots: [snapshot, ...prev.reviewSnapshots],
+      };
+    });
+  }, []);
+
+  const deleteReviewSnapshot = useCallback((id: string) => {
+    setState(prev => ({
+      ...prev,
+      reviewSnapshots: prev.reviewSnapshots.filter(s => s.id !== id),
+    }));
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
@@ -332,6 +359,8 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         resetBatchItemsToPending,
         navigateToReview,
         clearReviewFilters,
+        saveReviewSnapshot,
+        deleteReviewSnapshot,
       }}
     >
       {children}
