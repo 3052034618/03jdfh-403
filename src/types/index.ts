@@ -10,6 +10,8 @@ export type IssueType = 'not_triggered' | 'obscured' | 'distracted' | 'low_fps' 
 
 export type CameraAngle = 'first_person' | 'over_shoulder' | 'fixed' | 'cinematic';
 
+export type TestItemStatus = 'pending' | 'passed' | 'needs_review';
+
 export interface JumpScare {
   id: string;
   name: string;
@@ -56,6 +58,19 @@ export interface TestResult {
   saveState: SaveState;
   checks: TestCheckItem;
   passed: boolean;
+  batchId?: string;
+}
+
+export interface TestBatch {
+  id: string;
+  name: string;
+  route: CharacterRoute;
+  difficulty: Difficulty;
+  saveState: SaveState;
+  jumpScareIds: string[];
+  statuses: Record<string, TestItemStatus>;
+  createdAt: Date;
+  tester: string;
 }
 
 export interface Character {

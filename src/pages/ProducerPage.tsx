@@ -13,12 +13,17 @@ import {
   Lightbulb,
   FileText,
   ArrowRight,
+  Skull,
+  Zap,
+  BarChart3,
 } from 'lucide-react';
 import { producerInsights } from '../data/insights';
 import { characters } from '../data/characters';
 import { difficultyLabels } from '../data/chapters';
 import { useApp } from '../store/AppContext';
+import { jumpScares } from '../data/jumpScares';
 import { SeverityBadge } from '../components/Badges';
+import type { Severity, IssueType } from '../types';
 
 const ProducerPage: React.FC = () => {
   const { testResults } = useApp();
@@ -29,19 +34,87 @@ const ProducerPage: React.FC = () => {
     const total = testResults.length;
     const passed = testResults.filter((r) => r.passed).length;
     const passRate = total > 0 ? (passed / total) * 100 : 0;
-
-    const criticalCount = producerInsights.filter((i) => i.severity === 'critical').length;
-    const highCount = producerInsights.filter((i) => i.severity === 'high').length;
-
-    return {
-      total,
-      passed,
-      passRate,
-      criticalCount,
-      highCount,
-      totalInsights: producerInsights.length,
-    };
+    return { total, passed, passRate };
   }, [testResults]);
+
+  const failureRateByJumpScare = useMemo(() => {
+    const byId: Record<string, { name: string; total: number; failed: number; rate: number }> = {};
+    testResults.forEach((r) => {
+      if (!byId[r.jumpScareId]) {
+        const js = jumpScares.find((j) => j.id === r.jumpScareId);
+        byId[r.jumpScareId] = { name: js?.name || r.jumpScareId, total: 0, failed: 0, rate: 0 };
+      }
+      byId[r.jumpScareId].total++;
+      if (!r.passed) byId[r.jumpScareId].failed++;
+    });
+    Object.values(byId).forEach((v) => {
+      v.rate = v.total > 0 ? Math.round((v.failed / v.total) * 100) : 0;
+    });
+    return Object.entries(byId)
+      .map(([id, data]) => ({ id, ...data }))
+      .sort((a, b) => b.rate - a.rate);
+  }, [testResults]);
+
+  const issueTypeDistribution = useMemo(() => {
+    const dist: Record<IssueType, number> = {
+      not_triggered: 0, obscured: 0, distracted: 0, low_fps: 0, timing: 0, other: 0,
+    };
+    testResults.forEach((r) => {
+      if (r.checks.issueType) dist[r.checks.issueType]++;
+    });
+    return Object.entries(dist)
+      .map(([type, count]) => ({ type: type as IssueType, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [testResults]);
+
+  const severityDistribution = useMemo(() => {
+    const dist: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+    testResults.forEach((r) => {
+      if (r.checks.severity) dist[r.checks.severity]++;
+    });
+    return dist;
+  }, [testResults]);
+
+  const dynamicPriorityList = useMemo(() => {
+    const priorities: {
+      jumpScareId: string;
+      name: string;
+      failureRate: number;
+      topIssue: IssueType | null;
+      topSeverity: Severity | null;
+      totalTests: number;
+      rank: number;
+    }[] = [];
+
+    failureRateByJumpScare.forEach((item, idx) => {
+      if (item.failed === 0) return;
+      const relatedResults = testResults.filter((r) => r.jumpScareId === item.id);
+      const issueCounts: Record<string, number> = {};
+      let topSeverity: Severity | null = null;
+      let sevPriority: Record<Severity, number> = { critical: 0, high: 0, medium: 0, low: 0 };
+      relatedResults.forEach((r) => {
+        if (r.checks.issueType) issueCounts[r.checks.issueType] = (issueCounts[r.checks.issueType] || 0) + 1;
+        if (r.checks.severity) sevPriority[r.checks.severity]++;
+      });
+      const topIssue = Object.entries(issueCounts).sort(([, a], [, b]) => b - a)[0]?.[0] as IssueType | null;
+      for (const [sev, count] of Object.entries(sevPriority)) {
+        if (count > 0 && (!topSeverity || sevPriority[sev as Severity] > sevPriority[topSeverity])) {
+          topSeverity = sev as Severity;
+        }
+      }
+      priorities.push({
+        jumpScareId: item.id,
+        name: item.name,
+        failureRate: item.rate,
+        topIssue,
+        topSeverity,
+        totalTests: item.total,
+        rank: idx + 1,
+      });
+    });
+
+    return priorities;
+  }, [testResults, failureRateByJumpScare]);
 
   const filteredInsights = useMemo(() => {
     if (categoryFilter === 'all') return producerInsights;
@@ -51,9 +124,7 @@ const ProducerPage: React.FC = () => {
   const categoryStats = useMemo(() => {
     const stats: Record<string, { count: number; critical: number; high: number }> = {};
     producerInsights.forEach((insight) => {
-      if (!stats[insight.category]) {
-        stats[insight.category] = { count: 0, critical: 0, high: 0 };
-      }
+      if (!stats[insight.category]) stats[insight.category] = { count: 0, critical: 0, high: 0 };
       stats[insight.category].count++;
       if (insight.severity === 'critical') stats[insight.category].critical++;
       if (insight.severity === 'high') stats[insight.category].high++;
@@ -67,6 +138,15 @@ const ProducerPage: React.FC = () => {
     fatigue: { label: '情感疲劳', icon: '😫', color: 'text-purple-400' },
     visibility: { label: '可见性', icon: '👁️', color: 'text-cyan-400' },
     immersion: { label: '沉浸感', icon: '🎭', color: 'text-pink-400' },
+  };
+
+  const issueTypeLabels: Record<IssueType, { label: string; icon: string; color: string }> = {
+    not_triggered: { label: '未触发', icon: '❌', color: 'text-gray-300' },
+    obscured: { label: '被遮挡', icon: '🚫', color: 'text-purple-300' },
+    distracted: { label: '注意力分散', icon: '💬', color: 'text-cyan-300' },
+    low_fps: { label: '低帧率', icon: '📉', color: 'text-pink-300' },
+    timing: { label: '时机问题', icon: '⏱️', color: 'text-amber-300' },
+    other: { label: '其他', icon: '❗', color: 'text-slate-300' },
   };
 
   const getHealthColor = (rate: number) => {
@@ -93,9 +173,7 @@ const ProducerPage: React.FC = () => {
             </div>
             <div>
               <h2 className="text-2xl font-bold text-horror-heading">制作人视图</h2>
-              <p className="text-horror-text/70 text-sm">
-                数据驱动的体验诊断，助力上线前集中修正
-              </p>
+              <p className="text-horror-text/70 text-sm">数据驱动的体验诊断，助力上线前集中修正</p>
             </div>
           </div>
         </div>
@@ -104,92 +182,180 @@ const ProducerPage: React.FC = () => {
           <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
             <div className="flex items-center justify-between mb-3">
               <span className="text-sm text-horror-text/60">整体通过率</span>
-              {overallStats.passRate >= 60 ? (
-                <TrendingUp className="w-4 h-4 text-green-500" />
-              ) : (
-                <TrendingDown className="w-4 h-4 text-red-500" />
-              )}
+              {overallStats.passRate >= 60 ? <TrendingUp className="w-4 h-4 text-green-500" /> : <TrendingDown className="w-4 h-4 text-red-500" />}
             </div>
             <div className="flex items-end gap-2">
-              <span className={`text-4xl font-bold ${getHealthColor(overallStats.passRate)}`}>
-                {overallStats.passRate.toFixed(0)}%
-              </span>
-              <span className="text-sm text-horror-text/50 mb-1">
-                ({overallStats.passed}/{overallStats.total})
-              </span>
+              <span className={`text-4xl font-bold ${getHealthColor(overallStats.passRate)}`}>{overallStats.passRate.toFixed(0)}%</span>
+              <span className="text-sm text-horror-text/50 mb-1">({overallStats.passed}/{overallStats.total})</span>
             </div>
             <div className="mt-3 h-2 bg-horror-border/30 rounded-full overflow-hidden">
-              <div
-                className={`h-full rounded-full bg-gradient-to-r ${getHealthBg(overallStats.passRate)}`}
-                style={{ width: `${overallStats.passRate}%` }}
-              />
+              <div className={`h-full rounded-full bg-gradient-to-r ${getHealthBg(overallStats.passRate)}`} style={{ width: `${overallStats.passRate}%` }} />
             </div>
           </div>
-
           <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
             <div className="flex items-center justify-between mb-3">
               <span className="text-sm text-horror-text/60">严重问题</span>
               <AlertTriangle className="w-4 h-4 text-red-500" />
             </div>
-            <div className="text-4xl font-bold text-red-400">{overallStats.criticalCount}</div>
+            <div className="text-4xl font-bold text-red-400">{severityDistribution.critical}</div>
             <p className="text-xs text-horror-text/50 mt-2">需要立即修复的阻断性问题</p>
           </div>
-
           <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
             <div className="flex items-center justify-between mb-3">
               <span className="text-sm text-horror-text/60">高优先级</span>
               <AlertTriangle className="w-4 h-4 text-orange-500" />
             </div>
-            <div className="text-4xl font-bold text-orange-400">{overallStats.highCount}</div>
+            <div className="text-4xl font-bold text-orange-400">{severityDistribution.high}</div>
             <p className="text-xs text-horror-text/50 mt-2">建议本周内修复的问题</p>
           </div>
-
           <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
             <div className="flex items-center justify-between mb-3">
               <span className="text-sm text-horror-text/60">待处理洞察</span>
               <Lightbulb className="w-4 h-4 text-yellow-500" />
             </div>
-            <div className="text-4xl font-bold text-yellow-400">{overallStats.totalInsights}</div>
-            <p className="text-xs text-horror-text/50 mt-2">已识别的体验优化点</p>
+            <div className="text-4xl font-bold text-yellow-400">{producerInsights.length + dynamicPriorityList.length}</div>
+            <p className="text-xs text-horror-text/50 mt-2">预置 + 动态汇总</p>
           </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+          <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Skull className="w-5 h-5 text-horror-accent" />
+              <h3 className="text-sm font-semibold text-horror-heading">失败率最高的跳吓镜头</h3>
+            </div>
+            <div className="space-y-3">
+              {failureRateByJumpScare.slice(0, 5).map((item, idx) => (
+                <div key={item.id} className="flex items-center gap-3">
+                  <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${idx < 3 ? 'bg-red-500/20 text-red-400' : 'bg-horror-border/50 text-horror-text/50'}`}>
+                    {idx + 1}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center justify-between mb-1">
+                      <span className="text-sm text-horror-heading font-medium truncate mr-2">{item.name}</span>
+                      <span className={`text-sm font-bold ${item.rate > 60 ? 'text-red-400' : item.rate > 30 ? 'text-orange-400' : 'text-yellow-400'}`}>
+                        {item.rate}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-horror-border/30 rounded-full overflow-hidden">
+                      <div className={`h-full rounded-full ${item.rate > 60 ? 'bg-red-500' : item.rate > 30 ? 'bg-orange-500' : 'bg-yellow-500'}`} style={{ width: `${item.rate}%` }} />
+                    </div>
+                    <div className="flex items-center gap-2 mt-1 text-xs text-horror-text/50">
+                      <span>{item.failed} 失败 / {item.total} 总测试</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              {failureRateByJumpScare.every((i) => i.failed === 0) && (
+                <p className="text-sm text-horror-text/50 text-center py-4">暂无失败记录</p>
+              )}
+            </div>
+          </div>
+
+          <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Zap className="w-5 h-5 text-horror-warning" />
+              <h3 className="text-sm font-semibold text-horror-heading">最常见的问题类型</h3>
+            </div>
+            <div className="space-y-3">
+              {issueTypeDistribution.filter((i) => i.count > 0).map((item) => {
+                const config = issueTypeLabels[item.type];
+                const maxCount = issueTypeDistribution[0]?.count || 1;
+                return (
+                  <div key={item.type} className="flex items-center gap-3">
+                    <span className="text-lg">{config.icon}</span>
+                    <div className="flex-1">
+                      <div className="flex items-center justify-between mb-1">
+                        <span className={`text-sm font-medium ${config.color}`}>{config.label}</span>
+                        <span className="text-sm text-horror-heading font-bold">{item.count}</span>
+                      </div>
+                      <div className="h-1.5 bg-horror-border/30 rounded-full overflow-hidden">
+                        <div className="h-full bg-horror-accent rounded-full" style={{ width: `${(item.count / maxCount) * 100}%` }} />
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {issueTypeDistribution.every((i) => i.count === 0) && (
+                <p className="text-sm text-horror-text/50 text-center py-4">暂无问题类型记录</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-horror-panel rounded-xl border border-horror-border p-6 mb-8">
+          <div className="flex items-center gap-2 mb-4">
+            <BarChart3 className="w-5 h-5 text-horror-accent" />
+            <h3 className="text-lg font-semibold text-horror-heading">上线前优先处理列表（动态生成）</h3>
+          </div>
+          <p className="text-xs text-horror-text/50 mb-4">基于全部测试数据实时汇总，按失败率和严重程度排序</p>
+          {dynamicPriorityList.length === 0 ? (
+            <p className="text-sm text-horror-text/50 text-center py-6">所有测试均通过，暂无需要优先处理的问题</p>
+          ) : (
+            <div className="space-y-3">
+              {dynamicPriorityList.map((item) => {
+                const topIssueConfig = item.topIssue ? issueTypeLabels[item.topIssue] : null;
+                return (
+                  <div
+                    key={item.jumpScareId}
+                    className={`p-4 rounded-lg border flex items-center gap-4 ${
+                      item.topSeverity === 'critical'
+                        ? 'border-red-500/50 bg-red-500/5'
+                        : item.topSeverity === 'high'
+                        ? 'border-orange-500/40 bg-orange-500/5'
+                        : 'border-horror-border bg-horror-bg/30'
+                    }`}
+                  >
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold ${
+                      item.rank <= 3 ? 'bg-red-500/20 text-red-400' : 'bg-horror-border/50 text-horror-text/50'
+                    }`}>
+                      {item.rank}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-horror-heading">{item.name}</span>
+                        {item.topSeverity && <SeverityBadge severity={item.topSeverity} size="sm" />}
+                        {topIssueConfig && (
+                          <span className={`text-xs ${topIssueConfig.color}`}>{topIssueConfig.icon} {topIssueConfig.label}</span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-3 mt-1 text-xs text-horror-text/60">
+                        <span>失败率: <strong className={item.failureRate > 60 ? 'text-red-400' : item.failureRate > 30 ? 'text-orange-400' : 'text-yellow-400'}>{item.failureRate}%</strong></span>
+                        <span>测试: {item.totalTests} 次</span>
+                      </div>
+                    </div>
+                    <div className="relative w-14 h-14 flex-shrink-0">
+                      <svg className="w-14 h-14 transform -rotate-90">
+                        <circle cx="28" cy="28" r="24" fill="none" stroke="currentColor" strokeWidth="3" className="text-horror-border/30" />
+                        <circle cx="28" cy="28" r="24" fill="none" stroke="currentColor" strokeWidth="3" strokeDasharray={`${(item.failureRate / 100) * 150} 150`} className={item.failureRate > 60 ? 'text-red-500' : item.failureRate > 30 ? 'text-orange-500' : 'text-yellow-500'} />
+                      </svg>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-xs font-bold text-horror-heading">{item.failureRate}%</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         <div className="bg-horror-panel rounded-xl border border-horror-border p-6 mb-8">
           <h3 className="text-lg font-semibold text-horror-heading mb-4">问题分类概览</h3>
           <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-            <button
-              onClick={() => setCategoryFilter('all')}
-              className={`p-4 rounded-lg border text-left transition-all ${
-                categoryFilter === 'all'
-                  ? 'border-horror-accent bg-horror-accent/10'
-                  : 'border-horror-border bg-horror-bg/30 hover:border-horror-border/80'
-              }`}
-            >
-              <div className="text-2xl mb-2">📊</div>
-              <div className="font-medium text-horror-heading">全部</div>
+            <button onClick={() => setCategoryFilter('all')} className={`p-4 rounded-lg border text-left transition-all ${categoryFilter === 'all' ? 'border-horror-accent bg-horror-accent/10' : 'border-horror-border bg-horror-bg/30 hover:border-horror-border/80'}`}>
+              <div className="text-2xl mb-2">📊</div><div className="font-medium text-horror-heading">全部</div>
               <div className="text-2xl font-bold text-horror-heading mt-1">{producerInsights.length}</div>
             </button>
             {Object.entries(categoryStats).map(([category, stats]) => {
               const config = categoryLabels[category];
               return (
-                <button
-                  key={category}
-                  onClick={() => setCategoryFilter(category)}
-                  className={`p-4 rounded-lg border text-left transition-all ${
-                    categoryFilter === category
-                      ? 'border-horror-accent bg-horror-accent/10'
-                      : 'border-horror-border bg-horror-bg/30 hover:border-horror-border/80'
-                  }`}
-                >
+                <button key={category} onClick={() => setCategoryFilter(category)} className={`p-4 rounded-lg border text-left transition-all ${categoryFilter === category ? 'border-horror-accent bg-horror-accent/10' : 'border-horror-border bg-horror-bg/30 hover:border-horror-border/80'}`}>
                   <div className="text-2xl mb-2">{config.icon}</div>
                   <div className={`font-medium ${config.color}`}>{config.label}</div>
                   <div className="flex items-center gap-2 mt-1">
                     <span className="text-2xl font-bold text-horror-heading">{stats.count}</span>
-                    {stats.critical > 0 && (
-                      <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">
-                        {stats.critical}严重
-                      </span>
-                    )}
+                    {stats.critical > 0 && <span className="text-xs px-1.5 py-0.5 rounded bg-red-500/20 text-red-400">{stats.critical}严重</span>}
                   </div>
                 </button>
               );
@@ -201,26 +367,11 @@ const ProducerPage: React.FC = () => {
           {filteredInsights.map((insight) => {
             const isExpanded = expandedInsight === insight.id;
             const categoryConfig = categoryLabels[insight.category];
-            const affectedCharNames = insight.affectedRoutes
-              .map((r) => characters.find((c) => c.id === r)?.name)
-              .filter(Boolean);
+            const affectedCharNames = insight.affectedRoutes.map((r) => characters.find((c) => c.id === r)?.name).filter(Boolean);
             const affectedDiffNames = insight.affectedDifficulties.map((d) => difficultyLabels[d]);
-
             return (
-              <div
-                key={insight.id}
-                className={`bg-horror-panel rounded-xl border transition-all overflow-hidden ${
-                  insight.severity === 'critical'
-                    ? 'border-red-500/50 shadow-lg shadow-red-500/10'
-                    : insight.severity === 'high'
-                    ? 'border-orange-500/30'
-                    : 'border-horror-border'
-                }`}
-              >
-                <div
-                  className="p-5 cursor-pointer hover:bg-horror-bg/20 transition-colors"
-                  onClick={() => setExpandedInsight(isExpanded ? null : insight.id)}
-                >
+              <div key={insight.id} className={`bg-horror-panel rounded-xl border transition-all overflow-hidden ${insight.severity === 'critical' ? 'border-red-500/50 shadow-lg shadow-red-500/10' : insight.severity === 'high' ? 'border-orange-500/30' : 'border-horror-border'}`}>
+                <div className="p-5 cursor-pointer hover:bg-horror-bg/20 transition-colors" onClick={() => setExpandedInsight(isExpanded ? null : insight.id)}>
                   <div className="flex items-start justify-between gap-4">
                     <div className="flex-1">
                       <div className="flex items-center gap-3 mb-2">
@@ -229,44 +380,14 @@ const ProducerPage: React.FC = () => {
                         <span className={`text-sm ${categoryConfig.color}`}>{categoryConfig.label}</span>
                         <span className="text-xs text-horror-text/50">{insight.id}</span>
                       </div>
-                      <h4 className="text-lg font-semibold text-horror-heading mb-2">
-                        {insight.title}
-                      </h4>
+                      <h4 className="text-lg font-semibold text-horror-heading mb-2">{insight.title}</h4>
                       <p className="text-sm text-horror-text/70 line-clamp-2">{insight.description}</p>
-
                       <div className="flex items-center gap-4 mt-3 text-xs">
-                        <div className="flex items-center gap-1.5">
-                          <Users className="w-3.5 h-3.5 text-horror-text/50" />
-                          <span className="text-horror-text/70">
-                            影响: {affectedCharNames.join(', ')}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <Clock className="w-3.5 h-3.5 text-horror-text/50" />
-                          <span className="text-horror-text/70">
-                            难度: {affectedDiffNames.join(', ')}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <FileText className="w-3.5 h-3.5 text-horror-text/50" />
-                          <span className="text-horror-text/70">
-                            {insight.testCount} 次测试
-                          </span>
-                        </div>
-                        <div
-                          className={`flex items-center gap-1.5 font-medium ${
-                            insight.failureRate > 60
-                              ? 'text-red-400'
-                              : insight.failureRate > 30
-                              ? 'text-orange-400'
-                              : 'text-yellow-400'
-                          }`}
-                        >
-                          {insight.failureRate > 60 ? (
-                            <XCircle className="w-3.5 h-3.5" />
-                          ) : (
-                            <AlertTriangle className="w-3.5 h-3.5" />
-                          )}
+                        <div className="flex items-center gap-1.5"><Users className="w-3.5 h-3.5 text-horror-text/50" /><span className="text-horror-text/70">影响: {affectedCharNames.join(', ')}</span></div>
+                        <div className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5 text-horror-text/50" /><span className="text-horror-text/70">难度: {affectedDiffNames.join(', ')}</span></div>
+                        <div className="flex items-center gap-1.5"><FileText className="w-3.5 h-3.5 text-horror-text/50" /><span className="text-horror-text/70">{insight.testCount} 次测试</span></div>
+                        <div className={`flex items-center gap-1.5 font-medium ${insight.failureRate > 60 ? 'text-red-400' : insight.failureRate > 30 ? 'text-orange-400' : 'text-yellow-400'}`}>
+                          {insight.failureRate > 60 ? <XCircle className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
                           失败率 {insight.failureRate}%
                         </div>
                       </div>
@@ -274,95 +395,38 @@ const ProducerPage: React.FC = () => {
                     <div className="flex flex-col items-end gap-2">
                       <div className="relative w-16 h-16">
                         <svg className="w-16 h-16 transform -rotate-90">
-                          <circle
-                            cx="32"
-                            cy="32"
-                            r="28"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="4"
-                            className="text-horror-border/30"
-                          />
-                          <circle
-                            cx="32"
-                            cy="32"
-                            r="28"
-                            fill="none"
-                            stroke="currentColor"
-                            strokeWidth="4"
-                            strokeDasharray={`${(insight.failureRate / 100) * 176} 176`}
-                            className={
-                              insight.failureRate > 60
-                                ? 'text-red-500'
-                                : insight.failureRate > 30
-                                ? 'text-orange-500'
-                                : 'text-yellow-500'
-                            }
-                          />
+                          <circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" strokeWidth="4" className="text-horror-border/30" />
+                          <circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" strokeWidth="4" strokeDasharray={`${(insight.failureRate / 100) * 176} 176`} className={insight.failureRate > 60 ? 'text-red-500' : insight.failureRate > 30 ? 'text-orange-500' : 'text-yellow-500'} />
                         </svg>
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <span className="text-sm font-bold text-horror-heading">
-                            {insight.failureRate}%
-                          </span>
-                        </div>
+                        <div className="absolute inset-0 flex items-center justify-center"><span className="text-sm font-bold text-horror-heading">{insight.failureRate}%</span></div>
                       </div>
-                      {isExpanded ? (
-                        <ChevronUp className="w-5 h-5 text-horror-text/50" />
-                      ) : (
-                        <ChevronDown className="w-5 h-5 text-horror-text/50" />
-                      )}
+                      {isExpanded ? <ChevronUp className="w-5 h-5 text-horror-text/50" /> : <ChevronDown className="w-5 h-5 text-horror-text/50" />}
                     </div>
                   </div>
                 </div>
-
                 {isExpanded && (
                   <div className="border-t border-horror-border p-5 bg-horror-bg/30">
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                       <div>
-                        <h5 className="text-sm font-semibold text-horror-heading mb-3 flex items-center gap-2">
-                          <AlertTriangle className="w-4 h-4 text-orange-400" />
-                          问题详述
-                        </h5>
-                        <p className="text-sm text-horror-text/80 leading-relaxed">
-                          {insight.description}
-                        </p>
-
+                        <h5 className="text-sm font-semibold text-horror-heading mb-3 flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-orange-400" />问题详述</h5>
+                        <p className="text-sm text-horror-text/80 leading-relaxed">{insight.description}</p>
                         <div className="mt-4">
                           <h6 className="text-xs font-medium text-horror-text/60 mb-2">证据链</h6>
                           <div className="space-y-1.5">
                             {insight.evidence.map((ev, idx) => (
-                              <div
-                                key={idx}
-                                className="flex items-center gap-2 text-xs text-horror-text/70"
-                              >
-                                <span className="text-horror-accent">•</span>
-                                <span>{ev}</span>
-                              </div>
+                              <div key={idx} className="flex items-center gap-2 text-xs text-horror-text/70"><span className="text-horror-accent">•</span><span>{ev}</span></div>
                             ))}
                           </div>
                         </div>
                       </div>
-
                       <div>
-                        <h5 className="text-sm font-semibold text-horror-heading mb-3 flex items-center gap-2">
-                          <Lightbulb className="w-4 h-4 text-yellow-400" />
-                          修复建议
-                        </h5>
+                        <h5 className="text-sm font-semibold text-horror-heading mb-3 flex items-center gap-2"><Lightbulb className="w-4 h-4 text-yellow-400" />修复建议</h5>
                         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4">
-                          <p className="text-sm text-yellow-200/90 leading-relaxed">
-                            {insight.recommendation}
-                          </p>
+                          <p className="text-sm text-yellow-200/90 leading-relaxed">{insight.recommendation}</p>
                         </div>
-
                         <div className="mt-4 flex items-center gap-3">
-                          <button className="flex-1 py-2 px-4 bg-horror-accent text-white text-sm font-medium rounded-lg hover:bg-horror-accent/90 transition-colors flex items-center justify-center gap-2">
-                            <CheckCircle2 className="w-4 h-4" />
-                            标记为已处理
-                          </button>
-                          <button className="py-2 px-4 bg-horror-border/50 text-horror-text text-sm font-medium rounded-lg hover:bg-horror-border transition-colors flex items-center justify-center gap-2">
-                            <ArrowRight className="w-4 h-4" />
-                            查看详情
-                          </button>
+                          <button className="flex-1 py-2 px-4 bg-horror-accent text-white text-sm font-medium rounded-lg hover:bg-horror-accent/90 transition-colors flex items-center justify-center gap-2"><CheckCircle2 className="w-4 h-4" />标记为已处理</button>
+                          <button className="py-2 px-4 bg-horror-border/50 text-horror-text text-sm font-medium rounded-lg hover:bg-horror-border transition-colors flex items-center justify-center gap-2"><ArrowRight className="w-4 h-4" />查看详情</button>
                         </div>
                       </div>
                     </div>
@@ -371,49 +435,6 @@ const ProducerPage: React.FC = () => {
               </div>
             );
           })}
-        </div>
-
-        <div className="mt-8 bg-gradient-to-r from-horror-accent/20 to-horror-accent2/20 rounded-xl border border-horror-accent/30 p-6">
-          <div className="flex items-start gap-4">
-            <div className="w-12 h-12 rounded-xl bg-horror-accent/20 flex items-center justify-center flex-shrink-0">
-              <Lightbulb className="w-6 h-6 text-horror-accent" />
-            </div>
-            <div>
-              <h3 className="text-lg font-semibold text-horror-heading mb-2">
-                上线前修复优先级建议
-              </h3>
-              <div className="space-y-2 text-sm text-horror-text/80">
-                <p className="flex items-start gap-2">
-                  <span className="text-red-400 font-semibold">1.</span>
-                  <span>
-                    <strong className="text-red-400">紧急修复：</strong>
-                    2个严重问题（二周目绕路穿模、低帧率QTE）需要在上线前2周完成修复和回归测试
-                  </span>
-                </p>
-                <p className="flex items-start gap-2">
-                  <span className="text-orange-400 font-semibold">2.</span>
-                  <span>
-                    <strong className="text-orange-400">高优先级：</strong>
-                    3个高优先级问题（追逐疲劳、字幕遮挡、触发范围）建议在上线前1周完成
-                  </span>
-                </p>
-                <p className="flex items-start gap-2">
-                  <span className="text-yellow-400 font-semibold">3.</span>
-                  <span>
-                    <strong className="text-yellow-400">中优先级：</strong>
-                    2个中优先级问题可以考虑在后续热修复中更新，或作为Day One补丁
-                  </span>
-                </p>
-                <p className="flex items-start gap-2">
-                  <span className="text-blue-400 font-semibold">4.</span>
-                  <span>
-                    <strong className="text-blue-400">低优先级：</strong>
-                    1个低优先级问题（电量门槛）可作为次要优化项，或在DLC中改进
-                  </span>
-                </p>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>

@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Target, Clock, Move, Eye, AlertCircle, CheckCircle2, Play } from 'lucide-react';
-import type { JumpScare } from '../types';
+import { ChevronDown, ChevronUp, Target, Clock, Move, Eye, CheckCircle2, Play, XCircle, HelpCircle } from 'lucide-react';
+import type { JumpScare, TestItemStatus } from '../types';
 import { CameraAngleBadge } from './Badges';
 import { useApp } from '../store/AppContext';
 
@@ -8,13 +8,34 @@ interface JumpScarePreviewProps {
   jumpScare: JumpScare;
 }
 
+const statusConfig: Record<TestItemStatus, { icon: React.ReactNode; label: string; color: string; border: string }> = {
+  pending: {
+    icon: <HelpCircle className="w-4 h-4 text-horror-text/50 flex-shrink-0" />,
+    label: '待测',
+    color: 'text-horror-text/50',
+    border: 'border-horror-border',
+  },
+  passed: {
+    icon: <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />,
+    label: '已通过',
+    color: 'text-green-400',
+    border: 'border-green-500/50',
+  },
+  needs_review: {
+    icon: <XCircle className="w-4 h-4 text-yellow-500 flex-shrink-0" />,
+    label: '需复查',
+    color: 'text-yellow-400',
+    border: 'border-yellow-500/50',
+  },
+};
+
 const JumpScarePreview: React.FC<JumpScarePreviewProps> = ({ jumpScare }) => {
   const [isExpanded, setIsExpanded] = useState(false);
-  const { activeJumpScareId, setActiveJumpScareId, currentTestChecks } = useApp();
+  const { activeJumpScareId, setActiveJumpScareId, getBatchItemStatus, activeBatchId } = useApp();
 
   const isActive = activeJumpScareId === jumpScare.id;
-  const checks = currentTestChecks[jumpScare.id];
-  const hasChecks = checks && (checks.triggered || checks.obscured || checks.distracted || checks.lowFps || checks.notes);
+  const batchStatus = activeBatchId ? getBatchItemStatus(jumpScare.id) : null;
+  const status = batchStatus ? statusConfig[batchStatus] : null;
 
   const startPercent = (jumpScare.monsterWindow.start / 5) * 100;
   const durationPercent = (jumpScare.monsterWindow.duration / 5) * 100;
@@ -28,17 +49,15 @@ const JumpScarePreview: React.FC<JumpScarePreviewProps> = ({ jumpScare }) => {
     return labels[chapter] || chapter;
   };
 
+  const borderColor = isActive
+    ? 'border-horror-accent glow-red ring-1 ring-horror-accent/30'
+    : status
+    ? status.border
+    : 'border-horror-border hover:border-horror-border/80';
+
   return (
     <div
-      className={`bg-horror-panel rounded-xl border transition-all duration-300 overflow-hidden ${
-        isActive
-          ? 'border-horror-accent glow-red ring-1 ring-horror-accent/30'
-          : hasChecks
-          ? checks?.triggered && !checks?.obscured && !checks?.distracted && !checks?.lowFps
-            ? 'border-green-500/50'
-            : 'border-yellow-500/50'
-          : 'border-horror-border hover:border-horror-border/80'
-      }`}
+      className={`bg-horror-panel rounded-xl border transition-all duration-300 overflow-hidden ${borderColor}`}
     >
       <div
         className="p-4 cursor-pointer"
@@ -47,17 +66,12 @@ const JumpScarePreview: React.FC<JumpScarePreviewProps> = ({ jumpScare }) => {
         <div className="flex items-start justify-between gap-4">
           <div className="flex-1">
             <div className="flex items-center gap-2 mb-1">
-              {hasChecks ? (
-                checks?.triggered && !checks?.obscured && !checks?.distracted && !checks?.lowFps ? (
-                  <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
-                ) : (
-                  <AlertCircle className="w-4 h-4 text-yellow-500 flex-shrink-0" />
-                )
-              ) : (
-                <div className="w-4 h-4 rounded-full border-2 border-horror-border flex-shrink-0" />
-              )}
+              {status ? status.icon : <HelpCircle className="w-4 h-4 text-horror-text/50 flex-shrink-0" />}
               <h4 className="font-semibold text-horror-heading">{jumpScare.name}</h4>
               <span className="text-xs text-horror-text/50">{jumpScare.id}</span>
+              {status && (
+                <span className={`text-xs ${status.color} font-medium`}>{status.label}</span>
+              )}
             </div>
             <p className="text-sm text-horror-text/70 ml-6 mb-2">{jumpScare.description}</p>
             <div className="flex items-center gap-2 ml-6 flex-wrap">
@@ -79,11 +93,15 @@ const JumpScarePreview: React.FC<JumpScarePreviewProps> = ({ jumpScare }) => {
               className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                 isActive
                   ? 'bg-horror-accent text-white'
+                  : batchStatus === 'passed'
+                  ? 'bg-green-500/20 text-green-400 hover:bg-green-500/30'
+                  : batchStatus === 'needs_review'
+                  ? 'bg-yellow-500/20 text-yellow-400 hover:bg-yellow-500/30'
                   : 'bg-horror-border/50 text-horror-text hover:bg-horror-border hover:text-horror-heading'
               }`}
             >
               <Play className="w-3 h-3 inline mr-1" />
-              {isActive ? '测试中' : '开始测试'}
+              {isActive ? '测试中' : batchStatus === 'passed' ? '已通过' : batchStatus === 'needs_review' ? '复查' : '开始测试'}
             </button>
             {isExpanded ? (
               <ChevronUp className="w-5 h-5 text-horror-text/50" />

@@ -1,7 +1,16 @@
-import React, { createContext, useContext, useState } from 'react';
+import React, { createContext, useContext, useState, useCallback } from 'react';
 import type { ReactNode } from 'react';
-import type { CharacterRoute, Difficulty, SaveState, TestResult, TestCheckItem } from '../types';
+import type {
+  CharacterRoute,
+  Difficulty,
+  SaveState,
+  TestResult,
+  TestCheckItem,
+  TestBatch,
+  TestItemStatus,
+} from '../types';
 import { testResults as initialTestResults } from '../data/testResults';
+import { jumpScares } from '../data/jumpScares';
 
 interface AppState {
   selectedRoute: CharacterRoute | null;
@@ -11,6 +20,9 @@ interface AppState {
   testResults: TestResult[];
   activeJumpScareId: string | null;
   currentTestChecks: Record<string, TestCheckItem>;
+  batches: TestBatch[];
+  activeBatchId: string | null;
+  testerId: string;
 }
 
 interface AppContextType extends AppState {
@@ -22,6 +34,11 @@ interface AppContextType extends AppState {
   setActiveJumpScareId: (id: string | null) => void;
   updateTestCheck: (jumpScareId: string, checks: Partial<TestCheckItem>) => void;
   resetTestChecks: () => void;
+  createBatch: (name: string) => void;
+  setActiveBatchId: (id: string | null) => void;
+  updateBatchItemStatus: (batchId: string, jumpScareId: string, status: TestItemStatus) => void;
+  setTesterId: (id: string) => void;
+  getBatchItemStatus: (jumpScareId: string) => TestItemStatus;
 }
 
 const defaultChecks: TestCheckItem = {
@@ -43,6 +60,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     testResults: initialTestResults,
     activeJumpScareId: null,
     currentTestChecks: {},
+    batches: [],
+    activeBatchId: null,
+    testerId: 'QA-001',
   });
 
   const setSelectedRoute = (route: CharacterRoute | null) => {
@@ -89,6 +109,70 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     setState(prev => ({ ...prev, currentTestChecks: {} }));
   };
 
+  const createBatch = useCallback((name: string) => {
+    setState(prev => {
+      if (!prev.selectedRoute || !prev.selectedDifficulty || !prev.selectedSaveState) return prev;
+
+      const filteredIds = jumpScares
+        .filter(
+          js =>
+            js.routes.includes(prev.selectedRoute!) &&
+            js.difficulty.includes(prev.selectedDifficulty!) &&
+            js.saveStates.includes(prev.selectedSaveState!)
+        )
+        .map(js => js.id);
+
+      const statuses: Record<string, TestItemStatus> = {};
+      filteredIds.forEach(id => {
+        statuses[id] = 'pending';
+      });
+
+      const batch: TestBatch = {
+        id: `batch-${Date.now()}`,
+        name,
+        route: prev.selectedRoute,
+        difficulty: prev.selectedDifficulty,
+        saveState: prev.selectedSaveState,
+        jumpScareIds: filteredIds,
+        statuses,
+        createdAt: new Date(),
+        tester: prev.testerId,
+      };
+
+      return {
+        ...prev,
+        batches: [batch, ...prev.batches],
+        activeBatchId: batch.id,
+      };
+    });
+  }, []);
+
+  const setActiveBatchId = (id: string | null) => {
+    setState(prev => ({ ...prev, activeBatchId: id }));
+  };
+
+  const updateBatchItemStatus = (batchId: string, jumpScareId: string, status: TestItemStatus) => {
+    setState(prev => ({
+      ...prev,
+      batches: prev.batches.map(b =>
+        b.id === batchId
+          ? { ...b, statuses: { ...b.statuses, [jumpScareId]: status } }
+          : b
+      ),
+    }));
+  };
+
+  const setTesterId = (id: string) => {
+    setState(prev => ({ ...prev, testerId: id }));
+  };
+
+  const getBatchItemStatus = useCallback((jumpScareId: string): TestItemStatus => {
+    if (!state.activeBatchId) return 'pending';
+    const batch = state.batches.find(b => b.id === state.activeBatchId);
+    if (!batch) return 'pending';
+    return batch.statuses[jumpScareId] || 'pending';
+  }, [state.activeBatchId, state.batches]);
+
   return (
     <AppContext.Provider
       value={{
@@ -101,6 +185,11 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         setActiveJumpScareId,
         updateTestCheck,
         resetTestChecks,
+        createBatch,
+        setActiveBatchId,
+        updateBatchItemStatus,
+        setTesterId,
+        getBatchItemStatus,
       }}
     >
       {children}
