@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import {
   BarChart3,
   Filter,
@@ -23,8 +23,21 @@ import { difficultyLabels, saveStateLabels, chapters } from '../data/chapters';
 import { SeverityBadge, IssueTypeBadge, StatusBadge } from '../components/Badges';
 import type { Severity, IssueType, TestResult } from '../types';
 
+type CompareScope = 'all' | 'batch';
+
+interface GroupStat {
+  label: string;
+  subLabel?: string;
+  total: number;
+  passed: number;
+  failed: number;
+  passRate: number;
+  issueTypes: Record<string, number>;
+  topIssue: string | null;
+}
+
 const ReviewPage: React.FC = () => {
-  const { testResults, batches } = useApp();
+  const { testResults, batches, reviewFilters, clearReviewFilters } = useApp();
   const [groupBy, setGroupBy] = useState<'chapter' | 'level' | 'severity' | 'issueType'>('chapter');
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(new Set(['chapter1', 'chapter2', 'chapter3']));
   const [severityFilter, setSeverityFilter] = useState<Severity | 'all'>('all');
@@ -32,6 +45,22 @@ const ReviewPage: React.FC = () => {
   const [batchFilter, setBatchFilter] = useState<string>('all');
   const [testerFilter, setTesterFilter] = useState<string>('all');
   const [compareJumpScareId, setCompareJumpScareId] = useState<string | null>(null);
+  const [compareScope, setCompareScope] = useState<CompareScope>('all');
+  const [compareBatchId, setCompareBatchId] = useState<string>('all');
+
+  useEffect(() => {
+    if (reviewFilters) {
+      if (reviewFilters.severity && reviewFilters.severity !== 'all') setSeverityFilter(reviewFilters.severity as Severity);
+      if (reviewFilters.route && reviewFilters.route !== 'all') setRouteFilter(reviewFilters.route);
+      if (reviewFilters.batchId) {
+        setBatchFilter(reviewFilters.batchId);
+      }
+      if (reviewFilters.tester && reviewFilters.tester !== 'all') setTesterFilter(reviewFilters.tester);
+      if (reviewFilters.jumpScareId) setCompareJumpScareId(reviewFilters.jumpScareId);
+      if (reviewFilters.compareMode) setCompareScope('all');
+      clearReviewFilters();
+    }
+  }, [reviewFilters, clearReviewFilters]);
 
   const uniqueTesters = useMemo(() => {
     const testers = new Set(testResults.map((r) => r.tester));
@@ -42,7 +71,9 @@ const ReviewPage: React.FC = () => {
     return testResults.filter((result) => {
       if (severityFilter !== 'all' && result.checks.severity !== severityFilter) return false;
       if (routeFilter !== 'all' && result.route !== routeFilter) return false;
-      if (batchFilter !== 'all' && result.batchId !== batchFilter) return false;
+      if (batchFilter === 'none') {
+        if (result.batchId) return false;
+      } else if (batchFilter !== 'all' && result.batchId !== batchFilter) return false;
       if (testerFilter !== 'all' && result.tester !== testerFilter) return false;
       return true;
     });
@@ -69,8 +100,108 @@ const ReviewPage: React.FC = () => {
 
   const compareResults = useMemo(() => {
     if (!compareJumpScareId) return [];
-    return testResults.filter((r) => r.jumpScareId === compareJumpScareId);
-  }, [testResults, compareJumpScareId]);
+    let results = testResults.filter((r) => r.jumpScareId === compareJumpScareId);
+    if (compareScope === 'batch' && compareBatchId !== 'all') {
+      results = results.filter((r) => r.batchId === compareBatchId);
+    }
+    return results;
+  }, [testResults, compareJumpScareId, compareScope, compareBatchId]);
+
+  const routeGroupStats = useMemo((): GroupStat[] => {
+    if (compareResults.length === 0) return [];
+    const byRoute: Record<string, TestResult[]> = {};
+    compareResults.forEach((r) => {
+      const key = r.route;
+      if (!byRoute[key]) byRoute[key] = [];
+      byRoute[key].push(r);
+    });
+    return Object.entries(byRoute).map(([route, results]) => {
+      const passed = results.filter(r => r.passed).length;
+      const failed = results.length - passed;
+      const issueTypes: Record<string, number> = {};
+      results.forEach(r => {
+        if (r.checks.issueType) issueTypes[r.checks.issueType] = (issueTypes[r.checks.issueType] || 0) + 1;
+      });
+      const topIssue = Object.entries(issueTypes).sort(([, a], [, b]) => b - a)[0]?.[0] || null;
+      return {
+        label: characters.find(c => c.id === route)?.name || route,
+        subLabel: route,
+        total: results.length,
+        passed,
+        failed,
+        passRate: results.length > 0 ? Math.round((passed / results.length) * 100) : 0,
+        issueTypes,
+        topIssue,
+      };
+    });
+  }, [compareResults]);
+
+  const difficultyGroupStats = useMemo((): GroupStat[] => {
+    if (compareResults.length === 0) return [];
+    const byDiff: Record<string, TestResult[]> = {};
+    compareResults.forEach((r) => {
+      if (!byDiff[r.difficulty]) byDiff[r.difficulty] = [];
+      byDiff[r.difficulty].push(r);
+    });
+    return Object.entries(byDiff).map(([diff, results]) => {
+      const passed = results.filter(r => r.passed).length;
+      const failed = results.length - passed;
+      const issueTypes: Record<string, number> = {};
+      results.forEach(r => {
+        if (r.checks.issueType) issueTypes[r.checks.issueType] = (issueTypes[r.checks.issueType] || 0) + 1;
+      });
+      const topIssue = Object.entries(issueTypes).sort(([, a], [, b]) => b - a)[0]?.[0] || null;
+      return {
+        label: difficultyLabels[diff] || diff,
+        subLabel: diff,
+        total: results.length,
+        passed,
+        failed,
+        passRate: results.length > 0 ? Math.round((passed / results.length) * 100) : 0,
+        issueTypes,
+        topIssue,
+      };
+    });
+  }, [compareResults]);
+
+  const saveStateGroupStats = useMemo((): GroupStat[] => {
+    if (compareResults.length === 0) return [];
+    const bySave: Record<string, TestResult[]> = {};
+    compareResults.forEach((r) => {
+      if (!bySave[r.saveState]) bySave[r.saveState] = [];
+      bySave[r.saveState].push(r);
+    });
+    return Object.entries(bySave).map(([save, results]) => {
+      const passed = results.filter(r => r.passed).length;
+      const failed = results.length - passed;
+      const issueTypes: Record<string, number> = {};
+      results.forEach(r => {
+        if (r.checks.issueType) issueTypes[r.checks.issueType] = (issueTypes[r.checks.issueType] || 0) + 1;
+      });
+      const topIssue = Object.entries(issueTypes).sort(([, a], [, b]) => b - a)[0]?.[0] || null;
+      return {
+        label: saveStateLabels[save] || save,
+        subLabel: save,
+        total: results.length,
+        passed,
+        failed,
+        passRate: results.length > 0 ? Math.round((passed / results.length) * 100) : 0,
+        issueTypes,
+        topIssue,
+      };
+    });
+  }, [compareResults]);
+
+  const overallCompareStats = useMemo(() => {
+    if (compareResults.length === 0) return null;
+    const passed = compareResults.filter(r => r.passed).length;
+    const failed = compareResults.length - passed;
+    const issueTypes: Record<string, number> = {};
+    compareResults.forEach(r => {
+      if (r.checks.issueType) issueTypes[r.checks.issueType] = (issueTypes[r.checks.issueType] || 0) + 1;
+    });
+    return { total: compareResults.length, passed, failed, passRate: Math.round((passed / compareResults.length) * 100), issueTypes };
+  }, [compareResults]);
 
   const stats = useMemo(() => {
     const total = testResults.length;
@@ -130,6 +261,59 @@ const ReviewPage: React.FC = () => {
 
   const formatDate = (date: Date) => {
     return new Date(date).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+  };
+
+  const issueTypeLabel = (type: string) => {
+    const map: Record<string, string> = {
+      not_triggered: '未触发', obscured: '被遮挡', distracted: '注意力分散',
+      low_fps: '低帧率', timing: '时机问题', other: '其他',
+    };
+    return map[type] || type;
+  };
+
+  const renderGroupStats = (groupStats: GroupStat[], title: string) => {
+    if (groupStats.length === 0) return null;
+    return (
+      <div className="mb-4">
+        <h5 className="text-sm font-semibold text-horror-heading mb-3">{title}</h5>
+        <div className="space-y-2">
+          {groupStats.map((stat) => (
+            <div key={stat.subLabel || stat.label} className="p-3 bg-horror-bg/50 rounded-lg border border-horror-border/50">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm font-medium text-horror-heading">{stat.label}</span>
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-green-400">{stat.passed}通过</span>
+                  <span className="text-horror-text/30">/</span>
+                  <span className="text-red-400">{stat.failed}失败</span>
+                  <span className="text-horror-text/30">/</span>
+                  <span className="text-horror-text/60">{stat.total}总</span>
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <div className="flex-1 h-2 bg-horror-border/30 rounded-full overflow-hidden">
+                  <div className="flex h-full">
+                    <div className="bg-green-500 h-full" style={{ width: `${stat.passRate}%` }} />
+                    <div className="bg-red-500 h-full" style={{ width: `${100 - stat.passRate}%` }} />
+                  </div>
+                </div>
+                <span className={`text-sm font-bold w-12 text-right ${stat.passRate >= 80 ? 'text-green-400' : stat.passRate >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+                  {stat.passRate}%
+                </span>
+              </div>
+              {Object.keys(stat.issueTypes).length > 0 && (
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {Object.entries(stat.issueTypes).sort(([, a], [, b]) => b - a).map(([type, count]) => (
+                    <span key={type} className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-red-500/10 text-red-300 text-xs">
+                      {issueTypeLabel(type)} ×{count}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
+    );
   };
 
   return (
@@ -210,7 +394,7 @@ const ReviewPage: React.FC = () => {
             <div className="space-y-3">
               <div>
                 <label className="text-xs text-horror-text/60 mb-1 block">严重程度</label>
-                <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value as any)} className="w-full px-3 py-2 bg-horror-bg/50 border border-horror-border rounded-lg text-sm text-horror-text focus:outline-none focus:border-horror-accent/50">
+                <select value={severityFilter} onChange={(e) => setSeverityFilter(e.target.value as Severity | 'all')} className="w-full px-3 py-2 bg-horror-bg/50 border border-horror-border rounded-lg text-sm text-horror-text focus:outline-none focus:border-horror-accent/50">
                   <option value="all">全部</option><option value="critical">严重</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option>
                 </select>
               </div>
@@ -244,7 +428,7 @@ const ReviewPage: React.FC = () => {
             const Icon = option.icon;
             const isActive = groupBy === option.id;
             return (
-              <button key={option.id} onClick={() => setGroupBy(option.id as any)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-all ${isActive ? 'bg-horror-accent/20 text-horror-accent border border-horror-accent/30' : 'bg-horror-panel text-horror-text/70 border border-horror-border hover:text-horror-heading'}`}>
+              <button key={option.id} onClick={() => setGroupBy(option.id as typeof groupBy)} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm transition-all ${isActive ? 'bg-horror-accent/20 text-horror-accent border border-horror-accent/30' : 'bg-horror-panel text-horror-text/70 border border-horror-border hover:text-horror-heading'}`}>
                 <Icon className="w-4 h-4" />{option.label}
               </button>
             );
@@ -257,62 +441,141 @@ const ReviewPage: React.FC = () => {
               <div className="flex items-center gap-2">
                 <GitCompare className="w-5 h-5 text-horror-accent2" />
                 <h4 className="font-semibold text-horror-heading">
-                  跨路线对比：{jumpScares.find((js) => js.id === compareJumpScareId)?.name || compareJumpScareId}
+                  深度对比：{jumpScares.find((js) => js.id === compareJumpScareId)?.name || compareJumpScareId}
                 </h4>
               </div>
               <button onClick={() => setCompareJumpScareId(null)} className="text-horror-text/50 hover:text-horror-accent transition-colors">
                 <X className="w-5 h-5" />
               </button>
             </div>
-            <div className="p-4">
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-xs text-horror-text/60 border-b border-horror-border">
-                      <th className="pb-2 pr-4">路线</th>
-                      <th className="pb-2 pr-4">难度</th>
-                      <th className="pb-2 pr-4">存档</th>
-                      <th className="pb-2 pr-4">结果</th>
-                      <th className="pb-2 pr-4">问题类型</th>
-                      <th className="pb-2 pr-4">严重程度</th>
-                      <th className="pb-2 pr-4">测试员</th>
-                      <th className="pb-2">备注</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-horror-border/50">
-                    {compareResults.map((result) => {
-                      const char = characters.find((c) => c.id === result.route);
-                      return (
-                        <tr key={result.id} className={` ${!result.passed ? 'bg-red-500/5' : ''}`}>
-                          <td className="py-2 pr-4 text-horror-heading">{char?.name || result.route}</td>
-                          <td className="py-2 pr-4">{difficultyLabels[result.difficulty]}</td>
-                          <td className="py-2 pr-4">{saveStateLabels[result.saveState] || result.saveState}</td>
-                          <td className="py-2 pr-4"><StatusBadge passed={result.passed} /></td>
-                          <td className="py-2 pr-4">{result.checks.issueType ? <IssueTypeBadge type={result.checks.issueType} /> : <span className="text-horror-text/30">—</span>}</td>
-                          <td className="py-2 pr-4">{result.checks.severity ? <SeverityBadge severity={result.checks.severity} size="sm" /> : <span className="text-horror-text/30">—</span>}</td>
-                          <td className="py-2 pr-4 text-horror-text/70">{result.tester}</td>
-                          <td className="py-2 text-horror-text/60 max-w-[200px] truncate">{result.checks.notes || '—'}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+            <div className="p-4 space-y-4">
+              <div className="flex items-center gap-4">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs text-horror-text/60">对比范围：</span>
+                  <button
+                    onClick={() => setCompareScope('all')}
+                    className={`px-3 py-1 rounded text-xs transition-colors ${compareScope === 'all' ? 'bg-horror-accent/20 text-horror-accent border border-horror-accent/30' : 'bg-horror-bg/50 text-horror-text/70 border border-horror-border'}`}
+                  >
+                    跨批次
+                  </button>
+                  <button
+                    onClick={() => setCompareScope('batch')}
+                    className={`px-3 py-1 rounded text-xs transition-colors ${compareScope === 'batch' ? 'bg-horror-accent/20 text-horror-accent border border-horror-accent/30' : 'bg-horror-bg/50 text-horror-text/70 border border-horror-border'}`}
+                  >
+                    指定批次
+                  </button>
+                </div>
+                {compareScope === 'batch' && (
+                  <select
+                    value={compareBatchId}
+                    onChange={(e) => setCompareBatchId(e.target.value)}
+                    className="px-2 py-1 bg-horror-bg/50 border border-horror-border rounded text-xs text-horror-text focus:outline-none focus:border-horror-accent/50"
+                  >
+                    <option value="all">全部批次</option>
+                    {batches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+                  </select>
+                )}
               </div>
-              {compareResults.length > 1 && (
-                <div className="mt-4 p-3 bg-horror-bg/50 rounded-lg border border-horror-border">
-                  <p className="text-xs text-horror-text/70">
-                    <span className="font-semibold text-horror-heading">对比摘要：</span>
-                    {(() => {
-                      const failed = compareResults.filter((r) => !r.passed);
-                      const routesWithFailures = new Set(failed.map((r) => r.route));
-                      const allSameRoute = routesWithFailures.size === 0 || (routesWithFailures.size === 1 && failed.length === compareResults.filter((r) => r.route === Array.from(routesWithFailures)[0]).length);
-                      if (failed.length === 0) return ' 所有测试均通过，无路径相关问题。';
-                      if (allSameRoute) return ` 仅在路线「${characters.find((c) => c.id === Array.from(routesWithFailures)[0])?.name}」上出现失败，可能是路线特定问题。`;
-                      return ` 在 ${routesWithFailures.size} 条路线上均出现失败，可能是通用问题而非路径相关。`;
-                    })()}
-                  </p>
+
+              {overallCompareStats && (
+                <div className="p-3 bg-horror-bg/50 rounded-lg border border-horror-border">
+                  <div className="flex items-center gap-4">
+                    <div className="relative w-16 h-16">
+                      <svg className="w-16 h-16 transform -rotate-90">
+                        <circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" strokeWidth="4" className="text-horror-border/30" />
+                        <circle cx="32" cy="32" r="28" fill="none" stroke="currentColor" strokeWidth="4" strokeDasharray={`${(overallCompareStats.passRate / 100) * 176} 176`} className={overallCompareStats.passRate >= 80 ? 'text-green-500' : overallCompareStats.passRate >= 50 ? 'text-yellow-500' : 'text-red-500'} />
+                      </svg>
+                      <div className="absolute inset-0 flex items-center justify-center">
+                        <span className="text-sm font-bold text-horror-heading">{overallCompareStats.passRate}%</span>
+                      </div>
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-3 text-sm">
+                        <span className="text-horror-text/60">总测试:</span>
+                        <span className="text-horror-heading font-bold">{overallCompareStats.total}</span>
+                        <span className="text-green-400">{overallCompareStats.passed}通过</span>
+                        <span className="text-red-400">{overallCompareStats.failed}失败</span>
+                      </div>
+                      {Object.keys(overallCompareStats.issueTypes).length > 0 && (
+                        <div className="flex flex-wrap gap-2 mt-2">
+                          {Object.entries(overallCompareStats.issueTypes).sort(([, a], [, b]) => b - a).map(([type, count]) => (
+                            <span key={type} className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-red-500/10 text-red-300 text-xs">
+                              {issueTypeLabel(type)} ×{count}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
+
+              {renderGroupStats(routeGroupStats, '按路线分组')}
+              {renderGroupStats(difficultyGroupStats, '按难度分组')}
+              {renderGroupStats(saveStateGroupStats, '按存档分组')}
+
+              <div className="border-t border-horror-border pt-4">
+                <h5 className="text-sm font-semibold text-horror-heading mb-3">全部测试记录</h5>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-xs text-horror-text/60 border-b border-horror-border">
+                        <th className="pb-2 pr-4">路线</th>
+                        <th className="pb-2 pr-4">难度</th>
+                        <th className="pb-2 pr-4">存档</th>
+                        <th className="pb-2 pr-4">结果</th>
+                        <th className="pb-2 pr-4">问题类型</th>
+                        <th className="pb-2 pr-4">严重程度</th>
+                        <th className="pb-2 pr-4">测试员</th>
+                        <th className="pb-2 pr-4">批次</th>
+                        <th className="pb-2">备注</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-horror-border/50">
+                      {compareResults.map((result) => {
+                        const char = characters.find((c) => c.id === result.route);
+                        return (
+                          <tr key={result.id} className={` ${!result.passed ? 'bg-red-500/5' : ''}`}>
+                            <td className="py-2 pr-4 text-horror-heading">{char?.name || result.route}</td>
+                            <td className="py-2 pr-4">{difficultyLabels[result.difficulty]}</td>
+                            <td className="py-2 pr-4">{saveStateLabels[result.saveState] || result.saveState}</td>
+                            <td className="py-2 pr-4"><StatusBadge passed={result.passed} /></td>
+                            <td className="py-2 pr-4">{result.checks.issueType ? <IssueTypeBadge type={result.checks.issueType} /> : <span className="text-horror-text/30">—</span>}</td>
+                            <td className="py-2 pr-4">{result.checks.severity ? <SeverityBadge severity={result.checks.severity} size="sm" /> : <span className="text-horror-text/30">—</span>}</td>
+                            <td className="py-2 pr-4 text-horror-text/70">{result.tester}</td>
+                            <td className="py-2 pr-4 text-horror-text/70">{result.batchId ? (batches.find(b => b.id === result.batchId)?.name || result.batchId) : '—'}</td>
+                            <td className="py-2 text-horror-text/60 max-w-[200px] truncate">{result.checks.notes || '—'}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {compareResults.length > 1 && (
+                  <div className="mt-4 p-3 bg-horror-bg/50 rounded-lg border border-horror-border">
+                    <p className="text-xs text-horror-text/70">
+                      <span className="font-semibold text-horror-heading">对比摘要：</span>
+                      {(() => {
+                        const failed = compareResults.filter((r) => !r.passed);
+                        const routesWithFailures = new Set(failed.map((r) => r.route));
+                        if (failed.length === 0) return ' 所有测试均通过，无路径相关问题。';
+                        if (routesWithFailures.size === 1) {
+                          const routeName = characters.find(c => c.id === Array.from(routesWithFailures)[0])?.name;
+                          return ` 仅在路线「${routeName}」上出现失败，可能是路线特定问题。`;
+                        }
+                        const difficultiesWithFailures = new Set(failed.map(r => r.difficulty));
+                        const savesWithFailures = new Set(failed.map(r => r.saveState));
+                        let msg = ` 在 ${routesWithFailures.size} 条路线上出现失败`;
+                        if (difficultiesWithFailures.size === 1) msg += `，且均发生在${difficultyLabels[Array.from(difficultiesWithFailures)[0]]}难度`;
+                        if (savesWithFailures.size === 1) msg += `，存档均为${saveStateLabels[Array.from(savesWithFailures)[0]]}`;
+                        if (routesWithFailures.size > 1 && difficultiesWithFailures.size <= 1) msg += '，可能是通用问题而非路径相关';
+                        else msg += '，建议按路线逐项排查';
+                        return msg + '。';
+                      })()}
+                    </p>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
         )}
@@ -360,6 +623,9 @@ const ReviewPage: React.FC = () => {
                                 <div className="flex items-center gap-1"><span className="text-horror-text/50">测试员:</span>{result.tester}</div>
                                 {result.batchId && (
                                   <div className="flex items-center gap-1"><Layers className="w-3 h-3" />{batches.find((b) => b.id === result.batchId)?.name || result.batchId}</div>
+                                )}
+                                {!result.batchId && (
+                                  <div className="flex items-center gap-1 text-horror-text/30"><Layers className="w-3 h-3" />无批次</div>
                                 )}
                               </div>
                               {result.checks.notes && (

@@ -12,6 +12,15 @@ import type {
 import { testResults as initialTestResults } from '../data/testResults';
 import { jumpScares } from '../data/jumpScares';
 
+export interface ReviewFilterState {
+  severity?: string;
+  route?: string;
+  batchId?: string;
+  tester?: string;
+  jumpScareId?: string;
+  compareMode?: boolean;
+}
+
 interface AppState {
   selectedRoute: CharacterRoute | null;
   selectedDifficulty: Difficulty | null;
@@ -23,6 +32,7 @@ interface AppState {
   batches: TestBatch[];
   activeBatchId: string | null;
   testerId: string;
+  reviewFilters: ReviewFilterState | null;
 }
 
 interface AppContextType extends AppState {
@@ -39,6 +49,9 @@ interface AppContextType extends AppState {
   updateBatchItemStatus: (batchId: string, jumpScareId: string, status: TestItemStatus) => void;
   setTesterId: (id: string) => void;
   getBatchItemStatus: (jumpScareId: string) => TestItemStatus;
+  resetBatchItemsToPending: (batchId: string) => void;
+  navigateToReview: (filters: ReviewFilterState) => void;
+  clearReviewFilters: () => void;
 }
 
 const defaultChecks: TestCheckItem = {
@@ -63,6 +76,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     batches: [],
     activeBatchId: null,
     testerId: 'QA-001',
+    reviewFilters: null,
   });
 
   const setSelectedRoute = (route: CharacterRoute | null) => {
@@ -147,9 +161,26 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     });
   }, []);
 
-  const setActiveBatchId = (id: string | null) => {
-    setState(prev => ({ ...prev, activeBatchId: id }));
-  };
+  const setActiveBatchId = useCallback((id: string | null) => {
+    setState(prev => {
+      if (id) {
+        const batch = prev.batches.find(b => b.id === id);
+        if (batch) {
+          return {
+            ...prev,
+            activeBatchId: id,
+            selectedRoute: batch.route,
+            selectedDifficulty: batch.difficulty,
+            selectedSaveState: batch.saveState,
+          };
+        }
+      }
+      return {
+        ...prev,
+        activeBatchId: null,
+      };
+    });
+  }, []);
 
   const updateBatchItemStatus = (batchId: string, jumpScareId: string, status: TestItemStatus) => {
     setState(prev => ({
@@ -159,6 +190,20 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           ? { ...b, statuses: { ...b.statuses, [jumpScareId]: status } }
           : b
       ),
+    }));
+  };
+
+  const resetBatchItemsToPending = (batchId: string) => {
+    setState(prev => ({
+      ...prev,
+      batches: prev.batches.map(b => {
+        if (b.id !== batchId) return b;
+        const newStatuses: Record<string, TestItemStatus> = {};
+        for (const [jsId, status] of Object.entries(b.statuses)) {
+          newStatuses[jsId] = status === 'needs_review' ? 'pending' : status;
+        }
+        return { ...b, statuses: newStatuses };
+      }),
     }));
   };
 
@@ -172,6 +217,18 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     if (!batch) return 'pending';
     return batch.statuses[jumpScareId] || 'pending';
   }, [state.activeBatchId, state.batches]);
+
+  const navigateToReview = useCallback((filters: ReviewFilterState) => {
+    setState(prev => ({
+      ...prev,
+      reviewFilters: filters,
+      currentPage: 'review' as const,
+    }));
+  }, []);
+
+  const clearReviewFilters = () => {
+    setState(prev => ({ ...prev, reviewFilters: null }));
+  };
 
   return (
     <AppContext.Provider
@@ -190,6 +247,9 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateBatchItemStatus,
         setTesterId,
         getBatchItemStatus,
+        resetBatchItemsToPending,
+        navigateToReview,
+        clearReviewFilters,
       }}
     >
       {children}

@@ -16,17 +16,23 @@ import {
   Skull,
   Zap,
   BarChart3,
+  ShieldAlert,
+  Layers,
+  Activity,
+  Target,
+  AlertOctagon,
 } from 'lucide-react';
 import { producerInsights } from '../data/insights';
 import { characters } from '../data/characters';
-import { difficultyLabels } from '../data/chapters';
+import { difficultyLabels, saveStateLabels } from '../data/chapters';
 import { useApp } from '../store/AppContext';
+import type { ReviewFilterState } from '../store/AppContext';
 import { jumpScares } from '../data/jumpScares';
 import { SeverityBadge } from '../components/Badges';
 import type { Severity, IssueType } from '../types';
 
 const ProducerPage: React.FC = () => {
-  const { testResults } = useApp();
+  const { testResults, batches, navigateToReview } = useApp();
   const [expandedInsight, setExpandedInsight] = useState<string | null>(null);
   const [categoryFilter, setCategoryFilter] = useState<string>('all');
 
@@ -116,6 +122,106 @@ const ProducerPage: React.FC = () => {
     return priorities;
   }, [testResults, failureRateByJumpScare]);
 
+  const batchCompletionCards = useMemo(() => {
+    return batches.map(batch => {
+      const total = batch.jumpScareIds.length;
+      const passed = batch.jumpScareIds.filter(id => batch.statuses[id] === 'passed').length;
+      const needsReview = batch.jumpScareIds.filter(id => batch.statuses[id] === 'needs_review').length;
+      const pending = batch.jumpScareIds.filter(id => batch.statuses[id] === 'pending').length;
+      const completionRate = total > 0 ? Math.round(((passed + needsReview) / total) * 100) : 0;
+      const passRate = (passed + needsReview) > 0 ? Math.round((passed / (passed + needsReview)) * 100) : 0;
+      const batchResults = testResults.filter(r => r.batchId === batch.id);
+      const criticalCount = batchResults.filter(r => r.checks.severity === 'critical').length;
+      const highCount = batchResults.filter(r => r.checks.severity === 'high').length;
+      return {
+        id: batch.id,
+        name: batch.name,
+        route: characters.find(c => c.id === batch.route)?.name || batch.route,
+        difficulty: difficultyLabels[batch.difficulty],
+        saveState: saveStateLabels[batch.saveState],
+        createdAt: batch.createdAt,
+        tester: batch.tester,
+        total,
+        passed,
+        needsReview,
+        pending,
+        completionRate,
+        passRate,
+        criticalCount,
+        highCount,
+        severeIssueCount: criticalCount + highCount,
+      };
+    });
+  }, [batches, testResults]);
+
+  const severityTrend = useMemo(() => {
+    const sortedBatches = [...batches].sort((a, b) =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+    if (sortedBatches.length === 0 && testResults.length === 0) return [];
+    const trend: { label: string; critical: number; high: number; medium: number; low: number; total: number }[] = [];
+    if (sortedBatches.length > 0) {
+      sortedBatches.forEach(batch => {
+        const batchResults = testResults.filter(r => r.batchId === batch.id);
+        trend.push({
+          label: batch.name,
+          critical: batchResults.filter(r => r.checks.severity === 'critical').length,
+          high: batchResults.filter(r => r.checks.severity === 'high').length,
+          medium: batchResults.filter(r => r.checks.severity === 'medium').length,
+          low: batchResults.filter(r => r.checks.severity === 'low').length,
+          total: batchResults.length,
+        });
+      });
+    }
+    const noBatchResults = testResults.filter(r => !r.batchId);
+    if (noBatchResults.length > 0) {
+      trend.push({
+        label: '无批次记录',
+        critical: noBatchResults.filter(r => r.checks.severity === 'critical').length,
+        high: noBatchResults.filter(r => r.checks.severity === 'high').length,
+        medium: noBatchResults.filter(r => r.checks.severity === 'medium').length,
+        low: noBatchResults.filter(r => r.checks.severity === 'low').length,
+        total: noBatchResults.length,
+      });
+    }
+    return trend;
+  }, [batches, testResults]);
+
+  const consecutiveFailureCards = useMemo(() => {
+    const jsIds = [...new Set(testResults.map(r => r.jumpScareId))];
+    return jsIds
+      .map(jsId => {
+        const jsResults = testResults
+          .filter(r => r.jumpScareId === jsId)
+          .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+        let consecutiveFails = 0;
+        for (const r of jsResults) {
+          if (!r.passed) consecutiveFails++;
+          else break;
+        }
+        const js = jumpScares.find(j => j.id === jsId);
+        const totalFailures = jsResults.filter(r => !r.passed).length;
+        const topIssue = (() => {
+          const counts: Record<string, number> = {};
+          jsResults.filter(r => !r.passed && r.checks.issueType).forEach(r => {
+            counts[r.checks.issueType!] = (counts[r.checks.issueType!] || 0) + 1;
+          });
+          return Object.entries(counts).sort(([, a], [, b]) => b - a)[0]?.[0] || null;
+        })();
+        return {
+          jumpScareId: jsId,
+          name: js?.name || jsId,
+          consecutiveFails,
+          totalFailures,
+          totalTests: jsResults.length,
+          topIssue: topIssue as IssueType | null,
+          routes: [...new Set(jsResults.filter(r => !r.passed).map(r => r.route))],
+        };
+      })
+      .filter(item => item.consecutiveFails >= 2)
+      .sort((a, b) => b.consecutiveFails - a.consecutiveFails);
+  }, [testResults]);
+
   const filteredInsights = useMemo(() => {
     if (categoryFilter === 'all') return producerInsights;
     return producerInsights.filter((i) => i.category === categoryFilter);
@@ -161,6 +267,10 @@ const ProducerPage: React.FC = () => {
     if (rate >= 60) return 'from-yellow-500 to-yellow-400';
     if (rate >= 40) return 'from-orange-500 to-orange-400';
     return 'from-red-500 to-red-400';
+  };
+
+  const handleNavigateToReview = (filters: ReviewFilterState) => {
+    navigateToReview(filters);
   };
 
   return (
@@ -218,6 +328,156 @@ const ProducerPage: React.FC = () => {
           </div>
         </div>
 
+        <div className="mb-8">
+          <div className="flex items-center gap-2 mb-4">
+            <ShieldAlert className="w-6 h-6 text-red-500" />
+            <h3 className="text-xl font-bold text-horror-heading">上线风险看板</h3>
+          </div>
+          <p className="text-sm text-horror-text/60 mb-4">实时监控批次进度、问题趋势和连续失败，点击卡片跳转复盘页查看详情</p>
+
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <Layers className="w-5 h-5 text-horror-accent" />
+                <h4 className="text-sm font-semibold text-horror-heading">批次完成度</h4>
+              </div>
+              {batchCompletionCards.length === 0 ? (
+                <p className="text-sm text-horror-text/50 text-center py-6">暂无批次数据</p>
+              ) : (
+                <div className="space-y-3">
+                  {batchCompletionCards.map(card => (
+                    <button
+                      key={card.id}
+                      onClick={() => handleNavigateToReview({ batchId: card.id })}
+                      className="w-full text-left p-3 bg-horror-bg/50 rounded-lg border border-horror-border/50 hover:border-horror-accent/50 hover:bg-horror-accent/5 transition-all"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-horror-heading">{card.name}</span>
+                        <span className={`text-xs font-bold ${card.completionRate === 100 ? 'text-green-400' : card.completionRate >= 50 ? 'text-yellow-400' : 'text-red-400'}`}>
+                          {card.completionRate}%
+                        </span>
+                      </div>
+                      <div className="h-1.5 bg-horror-border/30 rounded-full overflow-hidden mb-2">
+                        <div className="flex h-full">
+                          <div className="bg-green-500 h-full" style={{ width: `${(card.passed / card.total) * 100}%` }} />
+                          <div className="bg-yellow-500 h-full" style={{ width: `${(card.needsReview / card.total) * 100}%` }} />
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-horror-text/50">
+                        <span>{card.route} · {card.difficulty}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-green-400">{card.passed}通过</span>
+                          <span className="text-yellow-400">{card.needsReview}复查</span>
+                          <span>{card.pending}待测</span>
+                        </div>
+                      </div>
+                      {card.severeIssueCount > 0 && (
+                        <div className="mt-1.5 flex items-center gap-1 text-xs text-red-400">
+                          <AlertOctagon className="w-3 h-3" />
+                          {card.severeIssueCount} 个严重/高优先级问题
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <Activity className="w-5 h-5 text-orange-400" />
+                <h4 className="text-sm font-semibold text-horror-heading">严重问题趋势</h4>
+              </div>
+              {severityTrend.length === 0 ? (
+                <p className="text-sm text-horror-text/50 text-center py-6">暂无趋势数据</p>
+              ) : (
+                <div className="space-y-3">
+                  {severityTrend.map((item, idx) => {
+                    const maxTotal = Math.max(...severityTrend.map(t => t.total), 1);
+                    return (
+                      <button
+                        key={idx}
+                        onClick={() => handleNavigateToReview({
+                          severity: item.critical > 0 ? 'critical' : item.high > 0 ? 'high' : undefined,
+                        })}
+                        className="w-full text-left p-3 bg-horror-bg/50 rounded-lg border border-horror-border/50 hover:border-horror-accent/50 hover:bg-horror-accent/5 transition-all"
+                      >
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-sm font-medium text-horror-heading truncate mr-2">{item.label}</span>
+                          <span className="text-xs text-horror-text/50">{item.total} 条</span>
+                        </div>
+                        <div className="h-3 bg-horror-border/30 rounded-full overflow-hidden flex">
+                          <div className="bg-red-500 h-full" style={{ width: `${(item.critical / maxTotal) * 100}%` }} title={`严重: ${item.critical}`} />
+                          <div className="bg-orange-500 h-full" style={{ width: `${(item.high / maxTotal) * 100}%` }} title={`高: ${item.high}`} />
+                          <div className="bg-yellow-500 h-full" style={{ width: `${(item.medium / maxTotal) * 100}%` }} title={`中: ${item.medium}`} />
+                          <div className="bg-blue-500 h-full" style={{ width: `${(item.low / maxTotal) * 100}%` }} title={`低: ${item.low}`} />
+                        </div>
+                        <div className="flex items-center gap-3 mt-2 text-xs">
+                          {item.critical > 0 && <span className="text-red-400">严重 {item.critical}</span>}
+                          {item.high > 0 && <span className="text-orange-400">高 {item.high}</span>}
+                          {item.medium > 0 && <span className="text-yellow-400">中 {item.medium}</span>}
+                          {item.low > 0 && <span className="text-blue-400">低 {item.low}</span>}
+                        </div>
+                      </button>
+                    );
+                  })}
+                  <div className="flex items-center gap-3 pt-2 text-xs text-horror-text/40 border-t border-horror-border/50">
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-red-500" />严重</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-orange-500" />高</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-yellow-500" />中</span>
+                    <span className="flex items-center gap-1"><span className="w-2 h-2 rounded-full bg-blue-500" />低</span>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
+              <div className="flex items-center gap-2 mb-4">
+                <Target className="w-5 h-5 text-red-400" />
+                <h4 className="text-sm font-semibold text-horror-heading">连续失败风险</h4>
+              </div>
+              {consecutiveFailureCards.length === 0 ? (
+                <p className="text-sm text-horror-text/50 text-center py-6">暂无连续失败记录</p>
+              ) : (
+                <div className="space-y-3">
+                  {consecutiveFailureCards.map(card => (
+                    <button
+                      key={card.jumpScareId}
+                      onClick={() => handleNavigateToReview({
+                        jumpScareId: card.jumpScareId,
+                        compareMode: true,
+                      })}
+                      className="w-full text-left p-3 bg-red-500/5 rounded-lg border border-red-500/30 hover:border-red-500/50 hover:bg-red-500/10 transition-all"
+                    >
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-sm font-medium text-horror-heading">{card.name}</span>
+                        <span className="px-2 py-0.5 rounded bg-red-500/20 text-red-400 text-xs font-bold">
+                          连续 {card.consecutiveFails} 次失败
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-horror-text/60">
+                        <span>累计失败: <span className="text-red-400 font-medium">{card.totalFailures}</span>/{card.totalTests}</span>
+                        {card.topIssue && (
+                          <span>主要问题: <span className="text-horror-accent">{issueTypeLabels[card.topIssue]?.label || card.topIssue}</span></span>
+                        )}
+                      </div>
+                      {card.routes.length > 0 && (
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {card.routes.map(route => (
+                            <span key={route} className="px-1.5 py-0.5 rounded bg-horror-border/30 text-xs text-horror-text/50">
+                              {characters.find(c => c.id === route)?.name || route}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
           <div className="bg-horror-panel rounded-xl border border-horror-border p-5">
             <div className="flex items-center gap-2 mb-4">
@@ -226,7 +486,11 @@ const ProducerPage: React.FC = () => {
             </div>
             <div className="space-y-3">
               {failureRateByJumpScare.slice(0, 5).map((item, idx) => (
-                <div key={item.id} className="flex items-center gap-3">
+                <button
+                  key={item.id}
+                  onClick={() => handleNavigateToReview({ jumpScareId: item.id, compareMode: true })}
+                  className="w-full text-left flex items-center gap-3 hover:bg-horror-bg/30 p-1 rounded transition-colors"
+                >
                   <div className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold ${idx < 3 ? 'bg-red-500/20 text-red-400' : 'bg-horror-border/50 text-horror-text/50'}`}>
                     {idx + 1}
                   </div>
@@ -244,7 +508,7 @@ const ProducerPage: React.FC = () => {
                       <span>{item.failed} 失败 / {item.total} 总测试</span>
                     </div>
                   </div>
-                </div>
+                </button>
               ))}
               {failureRateByJumpScare.every((i) => i.failed === 0) && (
                 <p className="text-sm text-horror-text/50 text-center py-4">暂无失败记录</p>
@@ -262,7 +526,11 @@ const ProducerPage: React.FC = () => {
                 const config = issueTypeLabels[item.type];
                 const maxCount = issueTypeDistribution[0]?.count || 1;
                 return (
-                  <div key={item.type} className="flex items-center gap-3">
+                  <button
+                    key={item.type}
+                    onClick={() => handleNavigateToReview({ severity: item.type })}
+                    className="w-full text-left flex items-center gap-3 hover:bg-horror-bg/30 p-1 rounded transition-colors"
+                  >
                     <span className="text-lg">{config.icon}</span>
                     <div className="flex-1">
                       <div className="flex items-center justify-between mb-1">
@@ -273,7 +541,7 @@ const ProducerPage: React.FC = () => {
                         <div className="h-full bg-horror-accent rounded-full" style={{ width: `${(item.count / maxCount) * 100}%` }} />
                       </div>
                     </div>
-                  </div>
+                  </button>
                 );
               })}
               {issueTypeDistribution.every((i) => i.count === 0) && (
@@ -296,9 +564,10 @@ const ProducerPage: React.FC = () => {
               {dynamicPriorityList.map((item) => {
                 const topIssueConfig = item.topIssue ? issueTypeLabels[item.topIssue] : null;
                 return (
-                  <div
+                  <button
                     key={item.jumpScareId}
-                    className={`p-4 rounded-lg border flex items-center gap-4 ${
+                    onClick={() => handleNavigateToReview({ jumpScareId: item.jumpScareId, compareMode: true })}
+                    className={`w-full text-left p-4 rounded-lg border flex items-center gap-4 transition-colors hover:brightness-110 ${
                       item.topSeverity === 'critical'
                         ? 'border-red-500/50 bg-red-500/5'
                         : item.topSeverity === 'high'
@@ -333,7 +602,7 @@ const ProducerPage: React.FC = () => {
                         <span className="text-xs font-bold text-horror-heading">{item.failureRate}%</span>
                       </div>
                     </div>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -426,7 +695,12 @@ const ProducerPage: React.FC = () => {
                         </div>
                         <div className="mt-4 flex items-center gap-3">
                           <button className="flex-1 py-2 px-4 bg-horror-accent text-white text-sm font-medium rounded-lg hover:bg-horror-accent/90 transition-colors flex items-center justify-center gap-2"><CheckCircle2 className="w-4 h-4" />标记为已处理</button>
-                          <button className="py-2 px-4 bg-horror-border/50 text-horror-text text-sm font-medium rounded-lg hover:bg-horror-border transition-colors flex items-center justify-center gap-2"><ArrowRight className="w-4 h-4" />查看详情</button>
+                          <button
+                            onClick={() => handleNavigateToReview({ compareMode: true })}
+                            className="py-2 px-4 bg-horror-border/50 text-horror-text text-sm font-medium rounded-lg hover:bg-horror-border transition-colors flex items-center justify-center gap-2"
+                          >
+                            <ArrowRight className="w-4 h-4" />查看复盘
+                          </button>
                         </div>
                       </div>
                     </div>

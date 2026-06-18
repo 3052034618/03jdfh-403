@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { User, Gamepad2, Save, ChevronRight, AlertTriangle, Plus, Layers, Clock } from 'lucide-react';
+import { User, Gamepad2, Save, ChevronRight, AlertTriangle, Plus, Layers, Clock, X, RotateCcw, CheckCircle2, XCircle, HelpCircle, FileText, ArrowRight } from 'lucide-react';
 import { useApp } from '../store/AppContext';
 import { characters } from '../data/characters';
 import { difficultyLabels, saveStateLabels } from '../data/chapters';
@@ -22,10 +22,13 @@ const TasksPage: React.FC = () => {
     setActiveBatchId,
     testerId,
     setTesterId,
+    testResults,
+    resetBatchItemsToPending,
   } = useApp();
 
   const [batchName, setBatchName] = useState('');
   const [showBatchForm, setShowBatchForm] = useState(false);
+  const [drawerBatchId, setDrawerBatchId] = useState<string | null>(null);
 
   const difficulties: { id: Difficulty; label: string; icon: string; color: string }[] = [
     { id: 'easy', label: '简单', icon: '🌱', color: 'text-green-400' },
@@ -54,6 +57,8 @@ const TasksPage: React.FC = () => {
 
   const activeBatch = batches.find((b) => b.id === activeBatchId);
 
+  const drawerBatch = batches.find((b) => b.id === drawerBatchId);
+
   const handleCreateBatch = () => {
     if (!batchName.trim()) {
       const now = new Date();
@@ -74,6 +79,42 @@ const TasksPage: React.FC = () => {
         needsReview: activeBatch.jumpScareIds.filter((id) => activeBatch.statuses[id] === 'needs_review').length,
       }
     : null;
+
+  const drawerBatchLatestResults = useMemo(() => {
+    if (!drawerBatch) return new Map<string, typeof testResults[number]>();
+    const map = new Map<string, typeof testResults[number]>();
+    for (const jsId of drawerBatch.jumpScareIds) {
+      const results = testResults.filter(
+        (r) => r.jumpScareId === jsId && r.batchId === drawerBatch.id
+      );
+      if (results.length > 0) {
+        map.set(jsId, results[0]);
+      }
+    }
+    return map;
+  }, [drawerBatch, testResults]);
+
+  const drawerNeedsReviewCount = drawerBatch
+    ? drawerBatch.jumpScareIds.filter((id) => drawerBatch.statuses[id] === 'needs_review').length
+    : 0;
+
+  const formatTimeAgo = (date: Date) => {
+    const diff = Date.now() - new Date(date).getTime();
+    const minutes = Math.floor(diff / 60000);
+    if (minutes < 1) return '刚刚';
+    if (minutes < 60) return `${minutes}分钟前`;
+    const hours = Math.floor(minutes / 60);
+    if (hours < 24) return `${hours}小时前`;
+    return `${Math.floor(hours / 24)}天前`;
+  };
+
+  const formatDuration = (start: Date, end: Date) => {
+    const diff = new Date(end).getTime() - new Date(start).getTime();
+    const minutes = Math.floor(diff / 60000);
+    const seconds = Math.floor((diff % 60000) / 1000);
+    if (minutes > 0) return `${minutes}分${seconds}秒`;
+    return `${seconds}秒`;
+  };
 
   return (
     <div className="min-h-screen">
@@ -254,10 +295,10 @@ const TasksPage: React.FC = () => {
                       {activeBatch.name}
                     </span>
                     <button
-                      onClick={() => setActiveBatchId(null)}
-                      className="text-xs text-horror-text/50 hover:text-horror-accent"
+                      onClick={() => setDrawerBatchId(activeBatch.id)}
+                      className="text-xs text-horror-accent hover:text-horror-accent/80 flex items-center gap-1"
                     >
-                      关闭批次
+                      <FileText className="w-3 h-3" />详情
                     </button>
                   </div>
                   {batchProgress && (
@@ -276,6 +317,19 @@ const TasksPage: React.FC = () => {
                       </div>
                     </div>
                   )}
+                  <div className="flex items-center gap-2 mt-2 text-xs text-horror-text/50">
+                    <span>{characters.find(c => c.id === activeBatch.route)?.name}</span>
+                    <span>·</span>
+                    <span>{difficultyLabels[activeBatch.difficulty]}</span>
+                    <span>·</span>
+                    <span>{saveStateLabels[activeBatch.saveState]}</span>
+                  </div>
+                  <button
+                    onClick={() => setActiveBatchId(null)}
+                    className="mt-2 text-xs text-horror-text/50 hover:text-horror-accent"
+                  >
+                    关闭批次
+                  </button>
                 </div>
               )}
 
@@ -289,24 +343,32 @@ const TasksPage: React.FC = () => {
                         (id) => batch.statuses[id] !== 'pending'
                       ).length;
                       return (
-                        <button
-                          key={batch.id}
-                          onClick={() => setActiveBatchId(isActive ? null : batch.id)}
-                          className={`w-full text-left p-2 rounded-lg border text-xs transition-all ${
-                            isActive
-                              ? 'border-horror-accent bg-horror-accent/10'
-                              : 'border-horror-border bg-horror-bg/30 hover:border-horror-border/80'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className="text-horror-heading font-medium">{batch.name}</span>
-                            <span className="text-horror-text/50">{completed}/{batch.jumpScareIds.length}</span>
-                          </div>
-                          <div className="flex items-center gap-2 mt-0.5 text-horror-text/40">
-                            <Clock className="w-3 h-3" />
-                            {new Date(batch.createdAt).toLocaleDateString('zh-CN')}
-                          </div>
-                        </button>
+                        <div key={batch.id} className="flex items-center gap-1">
+                          <button
+                            onClick={() => setActiveBatchId(isActive ? null : batch.id)}
+                            className={`flex-1 text-left p-2 rounded-lg border text-xs transition-all ${
+                              isActive
+                                ? 'border-horror-accent bg-horror-accent/10'
+                                : 'border-horror-border bg-horror-bg/30 hover:border-horror-border/80'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span className="text-horror-heading font-medium">{batch.name}</span>
+                              <span className="text-horror-text/50">{completed}/{batch.jumpScareIds.length}</span>
+                            </div>
+                            <div className="flex items-center gap-2 mt-0.5 text-horror-text/40">
+                              <Clock className="w-3 h-3" />
+                              {new Date(batch.createdAt).toLocaleDateString('zh-CN')}
+                            </div>
+                          </button>
+                          <button
+                            onClick={() => setDrawerBatchId(batch.id)}
+                            className="p-1.5 rounded-lg border border-horror-border bg-horror-bg/30 text-horror-text/50 hover:text-horror-accent hover:border-horror-accent/50 transition-colors"
+                            title="查看详情"
+                          >
+                            <FileText className="w-3 h-3" />
+                          </button>
+                        </div>
                       );
                     })}
                   </div>
@@ -402,6 +464,143 @@ const TasksPage: React.FC = () => {
           </div>
         )}
       </div>
+
+      {drawerBatch && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setDrawerBatchId(null)}
+          />
+          <div className="relative w-full max-w-lg bg-horror-panel border-l border-horror-border overflow-y-auto animate-in slide-in-from-right">
+            <div className="sticky top-0 bg-horror-panel border-b border-horror-border p-4 flex items-center justify-between z-10">
+              <div>
+                <h3 className="text-lg font-semibold text-horror-heading">{drawerBatch.name}</h3>
+                <div className="flex items-center gap-2 mt-1 text-xs text-horror-text/50">
+                  <span>{characters.find(c => c.id === drawerBatch.route)?.name}</span>
+                  <span>·</span>
+                  <span>{difficultyLabels[drawerBatch.difficulty]}</span>
+                  <span>·</span>
+                  <span>{saveStateLabels[drawerBatch.saveState]}</span>
+                  <span>·</span>
+                  <span>创建于 {new Date(drawerBatch.createdAt).toLocaleString('zh-CN')}</span>
+                </div>
+              </div>
+              <button
+                onClick={() => setDrawerBatchId(null)}
+                className="p-2 rounded-lg hover:bg-horror-bg/50 text-horror-text/50 hover:text-horror-heading transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-4">
+              <div className="grid grid-cols-3 gap-3">
+                {(() => {
+                  const total = drawerBatch.jumpScareIds.length;
+                  const pending = drawerBatch.jumpScareIds.filter(id => drawerBatch.statuses[id] === 'pending').length;
+                  const passed = drawerBatch.jumpScareIds.filter(id => drawerBatch.statuses[id] === 'passed').length;
+                  const needsReview = drawerBatch.jumpScareIds.filter(id => drawerBatch.statuses[id] === 'needs_review').length;
+                  return (
+                    <>
+                      <div className="text-center p-3 bg-horror-bg/50 rounded-lg border border-horror-border">
+                        <div className="text-horror-text/60 text-xs mb-1">待测</div>
+                        <div className="text-2xl font-bold text-horror-text">{pending}</div>
+                        <div className="text-xs text-horror-text/40 mt-0.5">{total > 0 ? Math.round((pending / total) * 100) : 0}%</div>
+                      </div>
+                      <div className="text-center p-3 bg-green-500/5 rounded-lg border border-green-500/20">
+                        <div className="text-green-400/60 text-xs mb-1">通过</div>
+                        <div className="text-2xl font-bold text-green-400">{passed}</div>
+                        <div className="text-xs text-horror-text/40 mt-0.5">{total > 0 ? Math.round((passed / total) * 100) : 0}%</div>
+                      </div>
+                      <div className="text-center p-3 bg-yellow-500/5 rounded-lg border border-yellow-500/20">
+                        <div className="text-yellow-400/60 text-xs mb-1">需复查</div>
+                        <div className="text-2xl font-bold text-yellow-400">{needsReview}</div>
+                        <div className="text-xs text-horror-text/40 mt-0.5">{total > 0 ? Math.round((needsReview / total) * 100) : 0}%</div>
+                      </div>
+                    </>
+                  );
+                })()}
+              </div>
+
+              {drawerNeedsReviewCount > 0 && (
+                <button
+                  onClick={() => {
+                    resetBatchItemsToPending(drawerBatch.id);
+                  }}
+                  className="w-full py-2.5 px-4 bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-sm font-medium rounded-lg hover:bg-yellow-500/20 transition-colors flex items-center justify-center gap-2"
+                >
+                  <RotateCcw className="w-4 h-4" />
+                  重排 {drawerNeedsReviewCount} 项需复查回待测
+                </button>
+              )}
+
+              <div className="space-y-2">
+                <h4 className="text-sm font-semibold text-horror-heading flex items-center gap-2">
+                  <ArrowRight className="w-4 h-4 text-horror-accent" />
+                  跳吓清单
+                </h4>
+                {drawerBatch.jumpScareIds.map((jsId) => {
+                  const js = jumpScares.find(j => j.id === jsId);
+                  const status = drawerBatch.statuses[jsId];
+                  const latestResult = drawerBatchLatestResults.get(jsId);
+                  const statusIcon = status === 'passed'
+                    ? <CheckCircle2 className="w-4 h-4 text-green-500" />
+                    : status === 'needs_review'
+                    ? <XCircle className="w-4 h-4 text-yellow-500" />
+                    : <HelpCircle className="w-4 h-4 text-horror-text/40" />;
+                  const statusLabel = status === 'passed'
+                    ? '已通过' : status === 'needs_review'
+                    ? '需复查' : '待测';
+                  const statusColor = status === 'passed'
+                    ? 'text-green-400' : status === 'needs_review'
+                    ? 'text-yellow-400' : 'text-horror-text/50';
+
+                  return (
+                    <div
+                      key={jsId}
+                      className={`p-3 rounded-lg border transition-all ${
+                        status === 'needs_review'
+                          ? 'border-yellow-500/30 bg-yellow-500/5'
+                          : status === 'passed'
+                          ? 'border-green-500/20 bg-green-500/5'
+                          : 'border-horror-border bg-horror-bg/30'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1">
+                        <div className="flex items-center gap-2">
+                          {statusIcon}
+                          <span className="text-sm font-medium text-horror-heading">{js?.name || jsId}</span>
+                        </div>
+                        <span className={`text-xs font-medium ${statusColor}`}>{statusLabel}</span>
+                      </div>
+                      {latestResult ? (
+                        <div className="mt-2 pl-6 space-y-1 text-xs text-horror-text/60">
+                          <div className="flex items-center gap-3">
+                            <span>测试员: <span className="text-horror-text/80">{latestResult.tester}</span></span>
+                            <span>结果: <span className={latestResult.passed ? 'text-green-400' : 'text-red-400'}>{latestResult.passed ? '通过' : '失败'}</span></span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            <span>提交: {formatTimeAgo(latestResult.timestamp)}</span>
+                            <span>耗时: {formatDuration(drawerBatch.createdAt, latestResult.timestamp)}</span>
+                          </div>
+                          {latestResult.checks.issueType && (
+                            <div>问题: <span className="text-horror-accent">{latestResult.checks.issueType}</span></div>
+                          )}
+                          {latestResult.checks.notes && (
+                            <div className="text-horror-text/40 truncate">备注: {latestResult.checks.notes}</div>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="mt-1 pl-6 text-xs text-horror-text/30">尚未提交测试记录</div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
