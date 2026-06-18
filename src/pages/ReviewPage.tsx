@@ -15,6 +15,11 @@ import {
   GitCompare,
   X,
   Layers,
+  GitBranch,
+  History,
+  Calendar,
+  MessageSquare,
+  Tag,
 } from 'lucide-react';
 import { useApp } from '../store/AppContext';
 import { jumpScares } from '../data/jumpScares';
@@ -47,6 +52,7 @@ const ReviewPage: React.FC = () => {
   const [compareJumpScareId, setCompareJumpScareId] = useState<string | null>(null);
   const [compareScope, setCompareScope] = useState<CompareScope>('all');
   const [compareBatchId, setCompareBatchId] = useState<string>('all');
+  const [selectedTimelineNode, setSelectedTimelineNode] = useState<string | null>(null);
 
   useEffect(() => {
     if (reviewFilters) {
@@ -201,6 +207,33 @@ const ReviewPage: React.FC = () => {
       if (r.checks.issueType) issueTypes[r.checks.issueType] = (issueTypes[r.checks.issueType] || 0) + 1;
     });
     return { total: compareResults.length, passed, failed, passRate: Math.round((passed / compareResults.length) * 100), issueTypes };
+  }, [compareResults]);
+
+  const timelineData = useMemo(() => {
+    if (compareResults.length === 0) return [];
+    const sorted = [...compareResults].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+    const chains: Array<{ chainId: number; results: TestResult[] }> = [];
+    let currentChain: TestResult[] = [];
+    let chainId = 0;
+    sorted.forEach((result) => {
+      if (!result.passed) {
+        currentChain.push(result);
+      } else {
+        if (currentChain.length > 0) {
+          currentChain.push(result);
+          chains.push({ chainId, results: currentChain });
+          chainId++;
+          currentChain = [];
+        } else {
+          chains.push({ chainId, results: [result] });
+          chainId++;
+        }
+      }
+    });
+    if (currentChain.length > 0) {
+      chains.push({ chainId, results: currentChain });
+    }
+    return chains;
   }, [compareResults]);
 
   const stats = useMemo(() => {
@@ -513,6 +546,148 @@ const ReviewPage: React.FC = () => {
               {renderGroupStats(routeGroupStats, '按路线分组')}
               {renderGroupStats(difficultyGroupStats, '按难度分组')}
               {renderGroupStats(saveStateGroupStats, '按存档分组')}
+
+              {timelineData.length > 0 && (
+                <div className="border-t border-horror-border pt-4">
+                  <div className="flex items-center gap-2 mb-4">
+                    <History className="w-5 h-5 text-horror-accent" />
+                    <h5 className="text-sm font-semibold text-horror-heading">失败链路时间线</h5>
+                    <span className="text-xs text-horror-text/50">点击节点查看详情</span>
+                  </div>
+                  <div className="space-y-6">
+                    {timelineData.map((chain) => {
+                      const hasFailures = chain.results.some(r => !r.passed);
+                      const lastResult = chain.results[chain.results.length - 1];
+                      const chainResolved = lastResult.passed;
+                      return (
+                        <div key={chain.chainId} className="relative pl-6">
+                          <div className="absolute left-0 top-0 bottom-0 w-0.5 bg-horror-border" />
+                          <div className={`absolute left-[-4px] top-0 w-2 h-2 rounded-full ${hasFailures ? (chainResolved ? 'bg-green-500' : 'bg-red-500 animate-pulse') : 'bg-green-500'}`} />
+                          <div className="mb-2">
+                            <span className="text-xs font-medium text-horror-text/70">
+                              {hasFailures ? `失败链路 #${chain.chainId + 1}` : '单次测试'}
+                              {chainResolved && hasFailures && <span className="text-green-400 ml-2">✓ 已回归通过</span>}
+                              {!chainResolved && hasFailures && <span className="text-red-400 ml-2">⚠ 待修复</span>}
+                            </span>
+                          </div>
+                          <div className="flex flex-wrap gap-3">
+                            {chain.results.map((result, idx) => {
+                              const isSelected = selectedTimelineNode === result.id;
+                              const char = characters.find(c => c.id === result.route);
+                              const batch = result.batchId ? batches.find(b => b.id === result.batchId) : null;
+                              return (
+                                <button
+                                  key={result.id}
+                                  onClick={() => setSelectedTimelineNode(isSelected ? null : result.id)}
+                                  className={`relative flex-shrink-0 p-3 rounded-lg border text-left transition-all ${
+                                    isSelected
+                                      ? 'border-horror-accent bg-horror-accent/10 shadow-lg shadow-horror-accent/20'
+                                      : result.passed
+                                      ? 'border-green-500/30 bg-green-500/5 hover:bg-green-500/10'
+                                      : 'border-red-500/30 bg-red-500/5 hover:bg-red-500/10'
+                                  }`}
+                                >
+                                  {idx < chain.results.length - 1 && (
+                                    <div className="absolute right-[-12px] top-1/2 w-3 h-0.5 bg-horror-border z-10" />
+                                  )}
+                                  <div className="flex items-center gap-2 mb-1">
+                                    {result.passed ? (
+                                      <CheckCircle className="w-4 h-4 text-green-400" />
+                                    ) : (
+                                      <XCircle className="w-4 h-4 text-red-400" />
+                                    )}
+                                    <span className={`text-xs font-medium ${result.passed ? 'text-green-400' : 'text-red-400'}`}>
+                                      {result.passed ? '通过' : '失败'}
+                                    </span>
+                                    {result.isRegression && (
+                                      <span className="px-1.5 py-0.5 rounded bg-horror-accent2/20 text-horror-accent2 text-[10px] font-medium flex items-center gap-1">
+                                        <GitBranch className="w-3 h-3" />回归
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="text-xs text-horror-heading font-medium mb-1">
+                                    {char?.name || result.route}
+                                  </div>
+                                  <div className="text-[10px] text-horror-text/50 flex items-center gap-1">
+                                    <Calendar className="w-3 h-3" />
+                                    {formatDate(result.timestamp)}
+                                  </div>
+                                  {batch && (
+                                    <div className="text-[10px] text-horror-text/50 flex items-center gap-1 mt-0.5">
+                                      <Layers className="w-3 h-3" />
+                                      {batch.name}
+                                    </div>
+                                  )}
+                                  <div className="text-[10px] text-horror-text/50 flex items-center gap-1 mt-0.5">
+                                    <User className="w-3 h-3" />
+                                    {result.tester}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {selectedTimelineNode && (() => {
+                            const result = chain.results.find(r => r.id === selectedTimelineNode);
+                            if (!result) return null;
+                            const char = characters.find(c => c.id === result.route);
+                            const batch = result.batchId ? batches.find(b => b.id === result.batchId) : null;
+                            return (
+                              <div className="mt-3 p-3 bg-horror-bg/70 rounded-lg border border-horror-border animate-fadeIn">
+                                <div className="grid grid-cols-2 gap-3 text-xs mb-2">
+                                  <div>
+                                    <span className="text-horror-text/50">路线：</span>
+                                    <span className="text-horror-heading">{char?.name || result.route}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-horror-text/50">难度：</span>
+                                    <span className="text-horror-heading">{difficultyLabels[result.difficulty]}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-horror-text/50">存档：</span>
+                                    <span className="text-horror-heading">{saveStateLabels[result.saveState] || result.saveState}</span>
+                                  </div>
+                                  <div>
+                                    <span className="text-horror-text/50">测试员：</span>
+                                    <span className="text-horror-heading">{result.tester}</span>
+                                  </div>
+                                  {batch && (
+                                    <div>
+                                      <span className="text-horror-text/50">批次：</span>
+                                      <span className="text-horror-heading">{batch.name}</span>
+                                    </div>
+                                  )}
+                                  {result.isRegression && (
+                                    <div>
+                                      <span className="text-horror-text/50">回归测试：</span>
+                                      <span className="text-horror-accent2">是</span>
+                                    </div>
+                                  )}
+                                </div>
+                                {result.checks.issueType && (
+                                  <div className="flex items-center gap-2 mb-2">
+                                    <Tag className="w-3.5 h-3.5 text-horror-text/50" />
+                                    <IssueTypeBadge type={result.checks.issueType} />
+                                    {result.checks.severity && <SeverityBadge severity={result.checks.severity} size="sm" />}
+                                  </div>
+                                )}
+                                {result.checks.notes && (
+                                  <div className="flex items-start gap-2">
+                                    <MessageSquare className="w-3.5 h-3.5 text-horror-text/50 mt-0.5 flex-shrink-0" />
+                                    <p className="text-xs text-horror-text/80">{result.checks.notes}</p>
+                                  </div>
+                                )}
+                                {!result.checks.notes && !result.checks.issueType && (
+                                  <p className="text-xs text-horror-text/40">无备注信息</p>
+                                )}
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               <div className="border-t border-horror-border pt-4">
                 <h5 className="text-sm font-semibold text-horror-heading mb-3">全部测试记录</h5>

@@ -77,6 +77,7 @@ const TestChecklist: React.FC<TestChecklistProps> = ({ jumpScares }) => {
   const checks = activeJumpScareId ? currentTestChecks[activeJumpScareId] : null;
 
   const activeBatch = batches.find((b) => b.id === activeBatchId);
+  const isRegressionBatch = !!activeBatch?.parentBatchId;
   const batchStatus = activeJumpScareId && activeBatch
     ? activeBatch.statuses[activeJumpScareId]
     : undefined;
@@ -150,6 +151,8 @@ const TestChecklist: React.FC<TestChecklistProps> = ({ jumpScares }) => {
       },
       passed,
       batchId: activeBatchId || undefined,
+      isRegression: isRegressionBatch,
+      parentBatchId: activeBatch?.parentBatchId,
     };
 
     addTestResult(result);

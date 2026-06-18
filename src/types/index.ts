@@ -59,6 +59,9 @@ export interface TestResult {
   checks: TestCheckItem;
   passed: boolean;
   batchId?: string;
+  isRegression?: boolean;
+  regressesResultId?: string;
+  parentBatchId?: string;
 }
 
 export interface TestBatch {
@@ -71,6 +74,10 @@ export interface TestBatch {
   statuses: Record<string, TestItemStatus>;
   createdAt: Date;
   tester: string;
+  parentBatchId?: string;
+  regressionReason?: string;
+  regressionJumpScareIds?: string[];
+  regressionResultIds?: Record<string, string>;
 }
 
 export interface Character {

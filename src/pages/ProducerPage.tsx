@@ -159,7 +159,7 @@ const ProducerPage: React.FC = () => {
       new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
     );
     if (sortedBatches.length === 0 && testResults.length === 0) return [];
-    const trend: { label: string; critical: number; high: number; medium: number; low: number; total: number }[] = [];
+    const trend: { label: string; critical: number; high: number; medium: number; low: number; total: number; batchId: string | 'none' }[] = [];
     if (sortedBatches.length > 0) {
       sortedBatches.forEach(batch => {
         const batchResults = testResults.filter(r => r.batchId === batch.id);
@@ -170,6 +170,7 @@ const ProducerPage: React.FC = () => {
           medium: batchResults.filter(r => r.checks.severity === 'medium').length,
           low: batchResults.filter(r => r.checks.severity === 'low').length,
           total: batchResults.length,
+          batchId: batch.id,
         });
       });
     }
@@ -182,6 +183,7 @@ const ProducerPage: React.FC = () => {
         medium: noBatchResults.filter(r => r.checks.severity === 'medium').length,
         low: noBatchResults.filter(r => r.checks.severity === 'low').length,
         total: noBatchResults.length,
+        batchId: 'none',
       });
     }
     return trend;
@@ -398,7 +400,9 @@ const ProducerPage: React.FC = () => {
                       <button
                         key={idx}
                         onClick={() => handleNavigateToReview({
+                          batchId: item.batchId,
                           severity: item.critical > 0 ? 'critical' : item.high > 0 ? 'high' : undefined,
+                          trendLabel: item.label,
                         })}
                         className="w-full text-left p-3 bg-horror-bg/50 rounded-lg border border-horror-border/50 hover:border-horror-accent/50 hover:bg-horror-accent/5 transition-all"
                       >

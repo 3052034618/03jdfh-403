@@ -15,10 +15,11 @@ import { jumpScares } from '../data/jumpScares';
 export interface ReviewFilterState {
   severity?: string;
   route?: string;
-  batchId?: string;
+  batchId?: string | 'none';
   tester?: string;
   jumpScareId?: string;
   compareMode?: boolean;
+  trendLabel?: string;
 }
 
 interface AppState {
@@ -33,6 +34,7 @@ interface AppState {
   activeBatchId: string | null;
   testerId: string;
   reviewFilters: ReviewFilterState | null;
+  batchLocked: boolean;
 }
 
 interface AppContextType extends AppState {
@@ -45,6 +47,7 @@ interface AppContextType extends AppState {
   updateTestCheck: (jumpScareId: string, checks: Partial<TestCheckItem>) => void;
   resetTestChecks: () => void;
   createBatch: (name: string) => void;
+  createRegressionBatch: (parentBatchId: string, jumpScareIds: string[], reason: string) => void;
   setActiveBatchId: (id: string | null) => void;
   updateBatchItemStatus: (batchId: string, jumpScareId: string, status: TestItemStatus) => void;
   setTesterId: (id: string) => void;
@@ -77,18 +80,28 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
     activeBatchId: null,
     testerId: 'QA-001',
     reviewFilters: null,
+    batchLocked: false,
   });
 
   const setSelectedRoute = (route: CharacterRoute | null) => {
-    setState(prev => ({ ...prev, selectedRoute: route }));
+    setState(prev => {
+      if (prev.activeBatchId && prev.batchLocked) return prev;
+      return { ...prev, selectedRoute: route };
+    });
   };
 
   const setSelectedDifficulty = (difficulty: Difficulty | null) => {
-    setState(prev => ({ ...prev, selectedDifficulty: difficulty }));
+    setState(prev => {
+      if (prev.activeBatchId && prev.batchLocked) return prev;
+      return { ...prev, selectedDifficulty: difficulty };
+    });
   };
 
   const setSelectedSaveState = (saveState: SaveState | null) => {
-    setState(prev => ({ ...prev, selectedSaveState: saveState }));
+    setState(prev => {
+      if (prev.activeBatchId && prev.batchLocked) return prev;
+      return { ...prev, selectedSaveState: saveState };
+    });
   };
 
   const setCurrentPage = (page: 'tasks' | 'review' | 'producer') => {
@@ -96,10 +109,35 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
   };
 
   const addTestResult = (result: TestResult) => {
-    setState(prev => ({
-      ...prev,
-      testResults: [result, ...prev.testResults],
-    }));
+    setState(prev => {
+      const newResults = [result, ...prev.testResults];
+      let newBatches = prev.batches;
+
+      if (result.batchId && result.isRegression && result.passed && result.parentBatchId) {
+        newBatches = prev.batches.map(batch => {
+          if (batch.id === result.parentBatchId) {
+            return {
+              ...batch,
+              statuses: {
+                ...batch.statuses,
+                [result.jumpScareId]: 'passed' as TestItemStatus,
+              },
+              regressionResultIds: {
+                ...(batch.regressionResultIds || {}),
+                [result.jumpScareId]: result.id,
+              },
+            };
+          }
+          return batch;
+        });
+      }
+
+      return {
+        ...prev,
+        testResults: newResults,
+        batches: newBatches,
+      };
+    });
   };
 
   const setActiveJumpScareId = (id: string | null) => {
@@ -157,6 +195,47 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         ...prev,
         batches: [batch, ...prev.batches],
         activeBatchId: batch.id,
+        batchLocked: true,
+      };
+    });
+  }, []);
+
+  const createRegressionBatch = useCallback((parentBatchId: string, jumpScareIds: string[], reason: string) => {
+    setState(prev => {
+      const parentBatch = prev.batches.find(b => b.id === parentBatchId);
+      if (!parentBatch || jumpScareIds.length === 0) return prev;
+
+      const statuses: Record<string, TestItemStatus> = {};
+      jumpScareIds.forEach(id => {
+        statuses[id] = 'pending';
+      });
+
+      const now = new Date();
+      const timeStr = `${now.getMonth() + 1}${now.getDate()}-${now.getHours()}${String(now.getMinutes()).padStart(2, '0')}`;
+
+      const batch: TestBatch = {
+        id: `batch-reg-${Date.now()}`,
+        name: `回归-${parentBatch.name}-${timeStr}`,
+        route: parentBatch.route,
+        difficulty: parentBatch.difficulty,
+        saveState: parentBatch.saveState,
+        jumpScareIds,
+        statuses,
+        createdAt: now,
+        tester: prev.testerId,
+        parentBatchId,
+        regressionReason: reason,
+        regressionJumpScareIds: jumpScareIds,
+      };
+
+      return {
+        ...prev,
+        batches: [batch, ...prev.batches],
+        activeBatchId: batch.id,
+        batchLocked: true,
+        selectedRoute: parentBatch.route,
+        selectedDifficulty: parentBatch.difficulty,
+        selectedSaveState: parentBatch.saveState,
       };
     });
   }, []);
@@ -169,6 +248,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
           return {
             ...prev,
             activeBatchId: id,
+            batchLocked: true,
             selectedRoute: batch.route,
             selectedDifficulty: batch.difficulty,
             selectedSaveState: batch.saveState,
@@ -178,6 +258,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
       return {
         ...prev,
         activeBatchId: null,
+        batchLocked: false,
       };
     });
   }, []);
@@ -243,6 +324,7 @@ export const AppProvider: React.FC<{ children: ReactNode }> = ({ children }) => 
         updateTestCheck,
         resetTestChecks,
         createBatch,
+        createRegressionBatch,
         setActiveBatchId,
         updateBatchItemStatus,
         setTesterId,

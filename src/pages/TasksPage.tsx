@@ -1,5 +1,9 @@
 import React, { useMemo, useState } from 'react';
-import { User, Gamepad2, Save, ChevronRight, AlertTriangle, Plus, Layers, Clock, X, RotateCcw, CheckCircle2, XCircle, HelpCircle, FileText, ArrowRight } from 'lucide-react';
+import {
+  User, Gamepad2, Save, ChevronRight, AlertTriangle, Plus, Layers, Clock, X,
+  RotateCcw, CheckCircle2, XCircle, HelpCircle, FileText, ArrowRight, Lock,
+  Unlock, GitBranch, CheckSquare, Square, RefreshCw,
+} from 'lucide-react';
 import { useApp } from '../store/AppContext';
 import { characters } from '../data/characters';
 import { difficultyLabels, saveStateLabels } from '../data/chapters';
@@ -19,16 +23,21 @@ const TasksPage: React.FC = () => {
     batches,
     activeBatchId,
     createBatch,
+    createRegressionBatch,
     setActiveBatchId,
     testerId,
     setTesterId,
     testResults,
     resetBatchItemsToPending,
+    batchLocked,
   } = useApp();
 
   const [batchName, setBatchName] = useState('');
   const [showBatchForm, setShowBatchForm] = useState(false);
   const [drawerBatchId, setDrawerBatchId] = useState<string | null>(null);
+  const [regressionSelection, setRegressionSelection] = useState<Set<string>>(new Set());
+  const [regressionReason, setRegressionReason] = useState('');
+  const [showRegressionPanel, setShowRegressionPanel] = useState(false);
 
   const difficulties: { id: Difficulty; label: string; icon: string; color: string }[] = [
     { id: 'easy', label: '简单', icon: '🌱', color: 'text-green-400' },
@@ -41,21 +50,24 @@ const TasksPage: React.FC = () => {
     ([id, label]) => ({ id: id as SaveState, label })
   );
 
+  const activeBatch = batches.find((b) => b.id === activeBatchId);
+
   const filteredJumpScares = useMemo(() => {
-    if (!selectedRoute || !selectedDifficulty || !selectedSaveState) {
-      return [];
+    if (activeBatch) {
+      return activeBatch.jumpScareIds
+        .map(id => jumpScares.find(js => js.id === id))
+        .filter((js): js is typeof jumpScares[number] => js !== undefined);
     }
+    if (!selectedRoute || !selectedDifficulty || !selectedSaveState) return [];
     return jumpScares.filter(
       (js) =>
         js.routes.includes(selectedRoute) &&
         js.difficulty.includes(selectedDifficulty) &&
         js.saveStates.includes(selectedSaveState)
     );
-  }, [selectedRoute, selectedDifficulty, selectedSaveState]);
+  }, [selectedRoute, selectedDifficulty, selectedSaveState, activeBatch]);
 
   const allSelected = selectedRoute && selectedDifficulty && selectedSaveState;
-
-  const activeBatch = batches.find((b) => b.id === activeBatchId);
 
   const drawerBatch = batches.find((b) => b.id === drawerBatchId);
 
@@ -69,6 +81,16 @@ const TasksPage: React.FC = () => {
     }
     setBatchName('');
     setShowBatchForm(false);
+  };
+
+  const handleCreateRegressionBatch = () => {
+    if (!drawerBatchId || regressionSelection.size === 0) return;
+    const ids = Array.from(regressionSelection);
+    createRegressionBatch(drawerBatchId, ids, regressionReason.trim());
+    setRegressionSelection(new Set());
+    setRegressionReason('');
+    setShowRegressionPanel(false);
+    setDrawerBatchId(null);
   };
 
   const batchProgress = activeBatch
@@ -94,9 +116,14 @@ const TasksPage: React.FC = () => {
     return map;
   }, [drawerBatch, testResults]);
 
-  const drawerNeedsReviewCount = drawerBatch
-    ? drawerBatch.jumpScareIds.filter((id) => drawerBatch.statuses[id] === 'needs_review').length
-    : 0;
+  const drawerNeedsReviewItems = useMemo(() => {
+    if (!drawerBatch) return [] as string[];
+    return drawerBatch.jumpScareIds.filter(id => drawerBatch.statuses[id] === 'needs_review');
+  }, [drawerBatch]);
+
+  const drawerParentBatch = drawerBatch?.parentBatchId
+    ? batches.find(b => b.id === drawerBatch.parentBatchId)
+    : null;
 
   const formatTimeAgo = (date: Date) => {
     const diff = Date.now() - new Date(date).getTime();
@@ -116,32 +143,74 @@ const TasksPage: React.FC = () => {
     return `${seconds}秒`;
   };
 
+  const toggleRegressionItem = (jsId: string) => {
+    setRegressionSelection(prev => {
+      const next = new Set(prev);
+      if (next.has(jsId)) next.delete(jsId);
+      else next.add(jsId);
+      return next;
+    });
+  };
+
+  const selectAllRegressionItems = () => {
+    if (!drawerBatch) return;
+    const needsReview = drawerBatch.jumpScareIds.filter(id => drawerBatch.statuses[id] === 'needs_review');
+    setRegressionSelection(new Set(needsReview));
+  };
+
+  const clearRegressionSelection = () => {
+    setRegressionSelection(new Set());
+  };
+
+  const renderLockBadge = () => {
+    if (!batchLocked) return null;
+    return (
+      <div className="flex items-center gap-1 px-2 py-0.5 bg-horror-accent/10 text-horror-accent text-xs rounded-full border border-horror-accent/30">
+        <Lock className="w-3 h-3" />
+        <span>批次已锁定</span>
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen">
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className="mb-8">
-          <h2 className="text-2xl font-bold text-horror-heading mb-2">测试任务</h2>
-          <p className="text-horror-text/70">
-            选择测试参数后创建测试批次，逐项验证跳吓镜头
-          </p>
+        <div className="mb-8 flex items-center justify-between">
+          <div>
+            <h2 className="text-2xl font-bold text-horror-heading mb-2">测试任务</h2>
+            <p className="text-horror-text/70">
+              选择测试参数后创建测试批次，逐项验证跳吓镜头
+            </p>
+          </div>
+          {renderLockBadge()}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
-          <div className="bg-horror-panel rounded-xl border border-horror-border p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <User className="w-5 h-5 text-horror-accent2" />
-              <h3 className="text-lg font-semibold text-horror-heading">选择角色路线</h3>
+          <div className={`bg-horror-panel rounded-xl border p-6 transition-all ${
+            batchLocked
+              ? 'border-horror-border/50 opacity-60'
+              : 'border-horror-border'
+          }`}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <User className="w-5 h-5 text-horror-accent2" />
+                <h3 className="text-lg font-semibold text-horror-heading">选择角色路线</h3>
+              </div>
+              {batchLocked && <Lock className="w-4 h-4 text-horror-text/40" />}
             </div>
             <div className="space-y-3">
               {characters.map((char) => (
                 <button
                   key={char.id}
                   onClick={() => setSelectedRoute(char.id as CharacterRoute)}
-                  className={`w-full text-left p-4 rounded-lg border transition-all duration-200 card-hover ${
+                  disabled={batchLocked}
+                  className={`w-full text-left p-4 rounded-lg border transition-all duration-200 ${
+                    !batchLocked ? 'card-hover' : ''
+                  } ${
                     selectedRoute === char.id
                       ? 'border-horror-accent2 bg-horror-accent2/10 glow-purple'
                       : 'border-horror-border bg-horror-bg/50 hover:border-horror-border/80'
-                  }`}
+                  } ${batchLocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                 >
                   <div className="flex items-center gap-3">
                     <span
@@ -163,23 +232,39 @@ const TasksPage: React.FC = () => {
                 </button>
               ))}
             </div>
+            {batchLocked && (
+              <p className="mt-3 text-xs text-horror-text/50 flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                批次打开时不可切换，请先关闭批次
+              </p>
+            )}
           </div>
 
-          <div className="bg-horror-panel rounded-xl border border-horror-border p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <Gamepad2 className="w-5 h-5 text-horror-warning" />
-              <h3 className="text-lg font-semibold text-horror-heading">选择难度</h3>
+          <div className={`bg-horror-panel rounded-xl border p-6 transition-all ${
+            batchLocked
+              ? 'border-horror-border/50 opacity-60'
+              : 'border-horror-border'
+          }`}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Gamepad2 className="w-5 h-5 text-horror-warning" />
+                <h3 className="text-lg font-semibold text-horror-heading">选择难度</h3>
+              </div>
+              {batchLocked && <Lock className="w-4 h-4 text-horror-text/40" />}
             </div>
             <div className="grid grid-cols-2 gap-3">
               {difficulties.map((diff) => (
                 <button
                   key={diff.id}
                   onClick={() => setSelectedDifficulty(diff.id)}
-                  className={`p-4 rounded-lg border transition-all duration-200 text-center card-hover ${
+                  disabled={batchLocked}
+                  className={`p-4 rounded-lg border transition-all duration-200 text-center ${
+                    !batchLocked ? 'card-hover' : ''
+                  } ${
                     selectedDifficulty === diff.id
                       ? 'border-horror-warning bg-horror-warning/10'
                       : 'border-horror-border bg-horror-bg/50 hover:border-horror-border/80'
-                  }`}
+                  } ${batchLocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                 >
                   <div className="text-2xl mb-2">{diff.icon}</div>
                   <div className={`font-medium ${diff.color}`}>{diff.label}</div>
@@ -189,23 +274,39 @@ const TasksPage: React.FC = () => {
                 </button>
               ))}
             </div>
+            {batchLocked && (
+              <p className="mt-3 text-xs text-horror-text/50 flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                批次打开时不可切换
+              </p>
+            )}
           </div>
 
-          <div className="bg-horror-panel rounded-xl border border-horror-border p-6">
-            <div className="flex items-center gap-2 mb-4">
-              <Save className="w-5 h-5 text-horror-success" />
-              <h3 className="text-lg font-semibold text-horror-heading">选择存档状态</h3>
+          <div className={`bg-horror-panel rounded-xl border p-6 transition-all ${
+            batchLocked
+              ? 'border-horror-border/50 opacity-60'
+              : 'border-horror-border'
+          }`}>
+            <div className="flex items-center justify-between mb-4">
+              <div className="flex items-center gap-2">
+                <Save className="w-5 h-5 text-horror-success" />
+                <h3 className="text-lg font-semibold text-horror-heading">选择存档状态</h3>
+              </div>
+              {batchLocked && <Lock className="w-4 h-4 text-horror-text/40" />}
             </div>
             <div className="space-y-2 max-h-[260px] overflow-y-auto pr-2">
               {saveStates.map((state) => (
                 <button
                   key={state.id}
                   onClick={() => setSelectedSaveState(state.id)}
-                  className={`w-full text-left p-3 rounded-lg border transition-all duration-200 card-hover ${
+                  disabled={batchLocked}
+                  className={`w-full text-left p-3 rounded-lg border transition-all duration-200 ${
+                    !batchLocked ? 'card-hover' : ''
+                  } ${
                     selectedSaveState === state.id
                       ? 'border-horror-success bg-horror-success/10'
                       : 'border-horror-border bg-horror-bg/50 hover:border-horror-border/80'
-                  }`}
+                  } ${batchLocked ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                 >
                   <div className="flex items-center gap-3">
                     <div
@@ -224,6 +325,12 @@ const TasksPage: React.FC = () => {
                 </button>
               ))}
             </div>
+            {batchLocked && (
+              <p className="mt-3 text-xs text-horror-text/50 flex items-center gap-1">
+                <Lock className="w-3 h-3" />
+                批次打开时不可切换
+              </p>
+            )}
           </div>
 
           <div className="bg-horror-panel rounded-xl border border-horror-border p-6">
@@ -291,9 +398,16 @@ const TasksPage: React.FC = () => {
               {activeBatch && (
                 <div className="p-3 bg-horror-accent/10 border border-horror-accent/30 rounded-lg">
                   <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm font-medium text-horror-heading">
-                      {activeBatch.name}
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-horror-heading">
+                        {activeBatch.name}
+                      </span>
+                      {activeBatch.parentBatchId && (
+                        <span title="回归批次">
+                          <GitBranch className="w-3 h-3 text-horror-accent2" />
+                        </span>
+                      )}
+                    </div>
                     <button
                       onClick={() => setDrawerBatchId(activeBatch.id)}
                       className="text-xs text-horror-accent hover:text-horror-accent/80 flex items-center gap-1"
@@ -301,6 +415,12 @@ const TasksPage: React.FC = () => {
                       <FileText className="w-3 h-3" />详情
                     </button>
                   </div>
+                  {activeBatch.parentBatchId && (
+                    <div className="text-xs text-horror-accent2/70 mb-2 flex items-center gap-1">
+                      <GitBranch className="w-3 h-3" />
+                      回归自: {batches.find(b => b.id === activeBatch.parentBatchId)?.name || activeBatch.parentBatchId}
+                    </div>
+                  )}
                   {batchProgress && (
                     <div className="grid grid-cols-3 gap-2 text-xs">
                       <div className="text-center p-1.5 bg-horror-bg/50 rounded">
@@ -326,9 +446,10 @@ const TasksPage: React.FC = () => {
                   </div>
                   <button
                     onClick={() => setActiveBatchId(null)}
-                    className="mt-2 text-xs text-horror-text/50 hover:text-horror-accent"
+                    className="mt-2 text-xs text-horror-text/50 hover:text-horror-accent flex items-center gap-1"
                   >
-                    关闭批次
+                    <Unlock className="w-3 h-3" />
+                    关闭并解锁批次
                   </button>
                 </div>
               )}
@@ -342,6 +463,7 @@ const TasksPage: React.FC = () => {
                       const completed = batch.jumpScareIds.filter(
                         (id) => batch.statuses[id] !== 'pending'
                       ).length;
+                      const isRegression = !!batch.parentBatchId;
                       return (
                         <div key={batch.id} className="flex items-center gap-1">
                           <button
@@ -353,7 +475,10 @@ const TasksPage: React.FC = () => {
                             }`}
                           >
                             <div className="flex items-center justify-between">
-                              <span className="text-horror-heading font-medium">{batch.name}</span>
+                              <div className="flex items-center gap-1.5">
+                                {isRegression && <GitBranch className="w-3 h-3 text-horror-accent2" />}
+                                <span className="text-horror-heading font-medium truncate">{batch.name}</span>
+                              </div>
                               <span className="text-horror-text/50">{completed}/{batch.jumpScareIds.length}</span>
                             </div>
                             <div className="flex items-center gap-2 mt-0.5 text-horror-text/40">
@@ -378,7 +503,7 @@ const TasksPage: React.FC = () => {
           </div>
         </div>
 
-        {!allSelected && (
+        {!allSelected && !activeBatchId && (
           <div className="bg-horror-panel/50 rounded-xl border border-horror-border border-dashed p-8 text-center">
             <AlertTriangle className="w-12 h-12 text-horror-warning mx-auto mb-4 opacity-50" />
             <h3 className="text-lg font-medium text-horror-heading mb-2">
@@ -409,20 +534,25 @@ const TasksPage: React.FC = () => {
           </div>
         )}
 
-        {allSelected && activeBatchId && (
+        {activeBatchId && (
           <div className="space-y-6">
             <div className="flex items-center justify-between">
               <div>
                 <h3 className="text-xl font-bold text-horror-heading">
                   跳吓预演清单
+                  {activeBatch?.parentBatchId && (
+                    <span className="ml-2 text-xs px-2 py-0.5 bg-horror-accent2/10 text-horror-accent2 rounded-full border border-horror-accent2/30 align-middle">
+                      回归批次
+                    </span>
+                  )}
                 </h3>
                 <p className="text-horror-text/60 mt-1">
-                  共筛选出 <span className="text-horror-accent font-semibold">{filteredJumpScares.length}</span> 个跳吓镜头
-                  {activeBatch && (
+                  共 <span className="text-horror-accent font-semibold">{filteredJumpScares.length}</span> 个跳吓镜头（来自「{activeBatch?.name}」）
+                  {batchProgress && (
                     <span className="ml-2">
-                      · 待测 <span className="text-horror-text">{batchProgress?.pending}</span>
-                      · 通过 <span className="text-green-400">{batchProgress?.passed}</span>
-                      · 需复查 <span className="text-yellow-400">{batchProgress?.needsReview}</span>
+                      · 待测 <span className="text-horror-text">{batchProgress.pending}</span>
+                      · 通过 <span className="text-green-400">{batchProgress.passed}</span>
+                      · 需复查 <span className="text-yellow-400">{batchProgress.needsReview}</span>
                     </span>
                   )}
                 </p>
@@ -469,13 +599,23 @@ const TasksPage: React.FC = () => {
         <div className="fixed inset-0 z-50 flex justify-end">
           <div
             className="absolute inset-0 bg-black/50 backdrop-blur-sm"
-            onClick={() => setDrawerBatchId(null)}
+            onClick={() => {
+              setDrawerBatchId(null);
+              setShowRegressionPanel(false);
+              setRegressionSelection(new Set());
+              setRegressionReason('');
+            }}
           />
           <div className="relative w-full max-w-lg bg-horror-panel border-l border-horror-border overflow-y-auto animate-in slide-in-from-right">
             <div className="sticky top-0 bg-horror-panel border-b border-horror-border p-4 flex items-center justify-between z-10">
               <div>
-                <h3 className="text-lg font-semibold text-horror-heading">{drawerBatch.name}</h3>
-                <div className="flex items-center gap-2 mt-1 text-xs text-horror-text/50">
+                <div className="flex items-center gap-2">
+                  <h3 className="text-lg font-semibold text-horror-heading">{drawerBatch.name}</h3>
+                  {drawerBatch.parentBatchId && (
+                    <GitBranch className="w-4 h-4 text-horror-accent2" />
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-horror-text/50">
                   <span>{characters.find(c => c.id === drawerBatch.route)?.name}</span>
                   <span>·</span>
                   <span>{difficultyLabels[drawerBatch.difficulty]}</span>
@@ -484,9 +624,25 @@ const TasksPage: React.FC = () => {
                   <span>·</span>
                   <span>创建于 {new Date(drawerBatch.createdAt).toLocaleString('zh-CN')}</span>
                 </div>
+                {drawerParentBatch && (
+                  <div className="text-xs text-horror-accent2/70 mt-1 flex items-center gap-1">
+                    <GitBranch className="w-3 h-3" />
+                    回归子批次，来源: {drawerParentBatch.name}
+                  </div>
+                )}
+                {drawerBatch.regressionReason && (
+                  <div className="text-xs text-horror-text/60 mt-1">
+                    回归原因: {drawerBatch.regressionReason}
+                  </div>
+                )}
               </div>
               <button
-                onClick={() => setDrawerBatchId(null)}
+                onClick={() => {
+                  setDrawerBatchId(null);
+                  setShowRegressionPanel(false);
+                  setRegressionSelection(new Set());
+                  setRegressionReason('');
+                }}
                 className="p-2 rounded-lg hover:bg-horror-bg/50 text-horror-text/50 hover:text-horror-heading transition-colors"
               >
                 <X className="w-5 h-5" />
@@ -522,7 +678,110 @@ const TasksPage: React.FC = () => {
                 })()}
               </div>
 
-              {drawerNeedsReviewCount > 0 && (
+              {drawerNeedsReviewItems.length > 0 && !drawerBatch.parentBatchId && (
+                <div className="space-y-2">
+                  {!showRegressionPanel ? (
+                    <button
+                      onClick={() => {
+                        setShowRegressionPanel(true);
+                        setRegressionSelection(new Set(drawerNeedsReviewItems));
+                      }}
+                      className="w-full py-2.5 px-4 bg-horror-accent2/10 border border-horror-accent2/30 text-horror-accent2 text-sm font-medium rounded-lg hover:bg-horror-accent2/20 transition-colors flex items-center justify-center gap-2"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      从需复查项创建回归批次（{drawerNeedsReviewItems.length}项）
+                    </button>
+                  ) : (
+                    <div className="p-3 bg-horror-accent2/5 border border-horror-accent2/30 rounded-lg space-y-3">
+                      <div className="flex items-center justify-between">
+                        <h5 className="text-sm font-semibold text-horror-heading flex items-center gap-2">
+                          <GitBranch className="w-4 h-4 text-horror-accent2" />
+                          创建回归批次
+                        </h5>
+                        <button
+                          onClick={() => {
+                            setShowRegressionPanel(false);
+                            setRegressionSelection(new Set());
+                            setRegressionReason('');
+                          }}
+                          className="text-xs text-horror-text/50 hover:text-horror-accent"
+                        >
+                          取消
+                        </button>
+                      </div>
+
+                      <div className="flex items-center gap-2 text-xs">
+                        <button
+                          onClick={selectAllRegressionItems}
+                          className="text-horror-accent hover:underline"
+                        >
+                          全选
+                        </button>
+                        <span className="text-horror-border">|</span>
+                        <button
+                          onClick={clearRegressionSelection}
+                          className="text-horror-text/50 hover:underline"
+                        >
+                          清空
+                        </button>
+                        <span className="ml-auto text-horror-text/50">
+                          已选 {regressionSelection.size} 项
+                        </span>
+                      </div>
+
+                      <div className="space-y-1.5 max-h-[180px] overflow-y-auto pr-1">
+                        {drawerNeedsReviewItems.map(jsId => {
+                          const js = jumpScares.find(j => j.id === jsId);
+                          const checked = regressionSelection.has(jsId);
+                          return (
+                            <label
+                              key={jsId}
+                              className={`flex items-start gap-2 p-2 rounded cursor-pointer transition-all ${
+                                checked ? 'bg-horror-accent2/10' : 'bg-horror-bg/30 hover:bg-horror-bg/50'
+                              }`}
+                            >
+                              {checked ? (
+                                <CheckSquare className="w-4 h-4 text-horror-accent2 mt-0.5 flex-shrink-0" />
+                              ) : (
+                                <Square className="w-4 h-4 text-horror-text/40 mt-0.5 flex-shrink-0" />
+                              )}
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() => toggleRegressionItem(jsId)}
+                                className="hidden"
+                              />
+                              <span className="text-sm text-horror-heading">{js?.name || jsId}</span>
+                            </label>
+                          );
+                        })}
+                      </div>
+
+                      <div>
+                        <label className="text-xs text-horror-text/60 mb-1 block">回归原因（可选）</label>
+                        <input
+                          type="text"
+                          value={regressionReason}
+                          onChange={(e) => setRegressionReason(e.target.value)}
+                          className="w-full px-3 py-2 bg-horror-bg/50 border border-horror-border rounded-lg text-sm text-horror-text focus:outline-none focus:border-horror-accent2/50"
+                          placeholder="如: 修复了遮挡问题后复测"
+                        />
+                      </div>
+
+                      <button
+                        onClick={handleCreateRegressionBatch}
+                        disabled={regressionSelection.size === 0}
+                        className="w-full py-2 px-4 bg-gradient-to-r from-horror-accent2 to-horror-accent2/80 text-white text-sm font-medium rounded-lg hover:from-horror-accent2/90 hover:to-horror-accent2/70 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2"
+                      >
+                        <Plus className="w-4 h-4" />
+                        创建包含 {regressionSelection.size} 项的回归批次
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {drawerNeedsReviewItems.length > 0 && !showRegressionPanel && (
                 <button
                   onClick={() => {
                     resetBatchItemsToPending(drawerBatch.id);
@@ -530,7 +789,7 @@ const TasksPage: React.FC = () => {
                   className="w-full py-2.5 px-4 bg-yellow-500/10 border border-yellow-500/30 text-yellow-400 text-sm font-medium rounded-lg hover:bg-yellow-500/20 transition-colors flex items-center justify-center gap-2"
                 >
                   <RotateCcw className="w-4 h-4" />
-                  重排 {drawerNeedsReviewCount} 项需复查回待测
+                  重排 {drawerNeedsReviewItems.length} 项需复查回待测
                 </button>
               )}
 
@@ -555,6 +814,10 @@ const TasksPage: React.FC = () => {
                     ? 'text-green-400' : status === 'needs_review'
                     ? 'text-yellow-400' : 'text-horror-text/50';
 
+                  const regressedPassed = drawerBatch.regressionResultIds?.[jsId]
+                    ? testResults.find(r => r.id === drawerBatch.regressionResultIds![jsId])?.passed
+                    : false;
+
                   return (
                     <div
                       key={jsId}
@@ -562,7 +825,9 @@ const TasksPage: React.FC = () => {
                         status === 'needs_review'
                           ? 'border-yellow-500/30 bg-yellow-500/5'
                           : status === 'passed'
-                          ? 'border-green-500/20 bg-green-500/5'
+                          ? regressedPassed
+                            ? 'border-green-500/40 bg-green-500/10'
+                            : 'border-green-500/20 bg-green-500/5'
                           : 'border-horror-border bg-horror-bg/30'
                       }`}
                     >
@@ -570,6 +835,11 @@ const TasksPage: React.FC = () => {
                         <div className="flex items-center gap-2">
                           {statusIcon}
                           <span className="text-sm font-medium text-horror-heading">{js?.name || jsId}</span>
+                          {regressedPassed && (
+                            <span className="text-xs px-1.5 py-0.5 bg-green-500/20 text-green-400 rounded">
+                              已回归通过
+                            </span>
+                          )}
                         </div>
                         <span className={`text-xs font-medium ${statusColor}`}>{statusLabel}</span>
                       </div>
